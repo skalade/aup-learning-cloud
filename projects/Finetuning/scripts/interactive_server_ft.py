@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: MIT
 """Interactive MolmoAct2 x LIBERO demo for FINE-TUNED checkpoints - SYNCHRONOUS rollout.
 
-This is the synchronous (chunk-replay) sibling of interactive_server_rt_ft.py. Instead of the
-real-time RTC engine (plan-ahead + blend), it runs the exact same closed-loop receding-horizon
-control loop as the Step-5 LIBERO eval: `lerobot_eval.rollout` plans an action chunk, executes
-it, then re-plans - the world is effectively frozen during each model forward. This is the
-deterministic, best-behaved demo (no blend artifacts), at the cost of hiding planner latency
-(the arm pauses briefly to think between chunks). Use this when policy precision matters more
-than continuous motion (e.g. the RTC blend was dropping grasped objects).
+Synchronous (chunk-replay) interactive server. Unlike a real-time RTC engine (plan-ahead +
+blend), it runs the exact same closed-loop receding-horizon control loop as the Step-5 LIBERO
+eval: `lerobot_eval.rollout` plans an action chunk, executes it, then re-plans - the world is
+effectively frozen during each model forward. This is the deterministic, best-behaved demo (no
+blend artifacts), at the cost of hiding planner latency (the arm pauses briefly to think between
+chunks). Use this when policy precision matters more than continuous motion (e.g. real-time
+blending was dropping grasped objects).
 
 Policy loading matches the RT server and the Step-5 eval: a LeRobot-format fine-tuned checkpoint
 via `--policy.path` (processor + normalization stats restored from the checkpoint, no norm_tag),
