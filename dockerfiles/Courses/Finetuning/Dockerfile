@@ -81,6 +81,13 @@ RUN mkdir -p \
       /home/jovyan/checkpoints \
       /home/jovyan/outputs \
       /ryzers/notebooks
+# Proxy the interactive LIBERO sim server (notebook Section 6) through each JupyterHub
+# user's existing notebook route, so no extra port must be exposed (same pattern the
+# LocalInference course uses for its Streamlit UI). Installed into the system python that
+# runs the single-user Jupyter server.
+RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages \
+      jupyter-server-proxy
+
 COPY ./course_data /ryzers/notebooks
 RUN chown -R jovyan:100 \
       /home/jovyan/.cache \
