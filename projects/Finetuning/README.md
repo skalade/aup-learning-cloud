@@ -46,10 +46,37 @@ Large checkpoints and datasets are **not** baked into the image - they are downl
 Hugging Face Hub at run time (base model / dataset) or staged onto the user's persistent storage
 (the fine-tuned checkpoint), and cached there for reuse.
 
+## Offline assets (no Hub re-download)
+
+For the workshop the large inputs are hosted on local storage and copied into the caches before
+the notebook runs, so nothing is downloaded from the Hub at the venue. Provide them via an
+`ASSETS_DIR` folder with this layout:
+
+```
+<ASSETS_DIR>/
+  hf_hub/
+    models--allenai--MolmoAct2-DROID/            # base checkpoint
+    models--allenai--MolmoAct2-FAST-Tokenizer/   # required by the policy (tiny)
+    datasets--allenai--MolmoAct2-LIBERO-Dataset/ # fine-tuning dataset
+    datasets--allenai--MolmoAct2-DROID-Dataset/  # optional: Step-3 open-loop check
+  checkpoints/
+    reference/pretrained_model/                  # our fine-tuned checkpoint
+```
+
+Stage it either way:
+
+- **In the notebook** - set `ASSETS_DIR=/path/to/assets`; both notebooks copy the items into
+  `$HF_HOME/hub` and `$REFERENCE_POLICY` on first run (idempotent - skips what already exists).
+- **Manually / at build** - `ASSETS_DIR=/path/to/assets scripts/stage_assets.sh`.
+
+Assets are staged (copied), never re-hosted in this repo - copy the folder from wherever the
+workshop stores it before running.
+
 ## Useful environment variables
 
 | Var | Default | Meaning |
 |---|---|---|
+| `ASSETS_DIR` | (unset) | Local folder holding the pre-downloaded base/dataset/checkpoint; staged into the caches so nothing is fetched from the Hub. |
 | `POLICY_PATH` | (unset) | Explicit policy checkpoint (dir or Hub repo id); overrides the default. |
 | `REFERENCE_POLICY` | `~/checkpoints/reference/pretrained_model` | Default fine-tuned checkpoint location. |
 | `SUITE` | `libero_object` | LIBERO task suite for the interactive sim. |
