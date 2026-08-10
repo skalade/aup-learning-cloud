@@ -72,6 +72,10 @@ Stage it either way:
 Assets are staged (copied), never re-hosted in this repo - copy the folder from wherever the
 workshop stores it before running.
 
+To load the bundle straight into a running pod (no mount), use
+`scripts/prestage_to_pod.sh <bundle_dir>`. For the full from-scratch bring-up of both notebooks on
+a fresh box, see [`REPRODUCE.md`](REPRODUCE.md).
+
 ## Useful environment variables
 
 | Var | Default | Meaning |
