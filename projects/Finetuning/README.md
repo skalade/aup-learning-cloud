@@ -1,72 +1,119 @@
 <!-- Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved. -->
 
-# ROSCon 2026: VLA Fine-tuning
+# ROSCon 2026: Fine-tuning a Robot Policy (MolmoAct2 + LIBERO)
 
-LoRA fine-tune the **MolmoAct2** vision-language-action model on the **LIBERO** simulator, then
-drive the fine-tuned policy live in the sim - all on a single AMD **Strix Halo** iGPU, from your
-browser. Everything runs inside this course environment; there is nothing to install and **no
-`sudo`** - you only need your AUP Learning Cloud login.
+In this workshop you take a real-robot vision-language-action model (**MolmoAct2**), teach it a new
+skill in a simulator (**LIBERO**) with a short **LoRA** fine-tune, and then drive the fine-tuned
+policy **live in the simulator** - typing an instruction and watching a robot arm carry it out.
 
-> Setting up the workshop (building the image, deploying JupyterHub, hosting the assets)? That is
-> the organizer/developer job - see **[ORGANIZER.md](ORGANIZER.md)**. This page is for attendees.
+Everything runs in your web browser on a single AMD **Strix Halo** machine. There is **nothing to
+install** on your laptop and you never need `sudo` or admin rights - just the login your organizer
+gives you.
 
-## 1. Start your environment
+> Setting up the workshop yourself (building the image, deploying the server, hosting the files)?
+> That is a different job - see **[ORGANIZER.md](ORGANIZER.md)**. This page is for attendees.
 
-On the AUP Learning Cloud spawn page pick **ROSCON 2026 → "Fine-tuning on GPUs"** and start the
-server. It lands you in `/ryzers/notebooks` with the two notebooks below. (Optional) sanity-check
-the GPU and the MolmoAct2 stack from a terminal:
+---
 
-```bash
-/ryzers/test_torch.sh        # ROCm torch sees the GPU
-/ryzers/test_molmoact2.sh    # MolmoAct2 + LIBERO training stack imports
+## Step 1 - Open the workshop server in your browser
+
+**Do this on: your own laptop, in Chrome or Firefox.**
+
+Your organizer will give you a web address for the workshop server. It looks like this (the part in
+angle brackets is filled in by your organizer):
+
+```
+http://<address-your-organizer-gives-you>:30890/
 ```
 
-## 2. Load the workshop assets (once, no download)
+Open that address, then log in with the username and password your organizer gave you.
 
-The base checkpoint, the LIBERO dataset and our fine-tuned checkpoint are large (~65 GB total),
-so instead of downloading them at the venue your instructor stages them on shared storage. Copy
-them into your pod once - a few minutes - with:
+If the page does not load, the server or the network route is not ready - tell your organizer (there
+is nothing to fix on your laptop).
+
+## Step 2 - Start your personal GPU server
+
+**Do this on: the web page from Step 1, after you log in.**
+
+You will see a "Server Options" page. Choose:
+
+- **ROSCon 2026 → "Fine-tuning on GPUs"**
+
+and click **Start**. After about a minute you land in a file browser showing a folder called
+`notebooks` with two `.ipynb` files. This is your own private server with its own AMD GPU.
+
+(Optional) To confirm the GPU is working, open a terminal with **New → Terminal** and run:
 
 ```bash
+/ryzers/test_torch.sh        # confirms the GPU is visible to PyTorch (ROCm)
+/ryzers/test_molmoact2.sh    # confirms the MolmoAct2 + LIBERO software imports
+```
+
+## Step 3 - Load the workshop files (one command, no downloading)
+
+**Do this on: a terminal inside your server (New → Terminal).**
+
+The base model, the training dataset, and a ready-made fine-tuned policy are large (about 47 GB
+together). Your organizer has already placed them on the machine, so you do **not** download
+anything at the venue. Pull them into your own workspace with one command:
+
+```bash
+cd /ryzers/notebooks
 scripts/fetch_assets.sh
 ```
 
-That places everything in your `~/.cache/huggingface` and `~/checkpoints`. The notebooks then
-**detect the cache and skip every download automatically** - you do not toggle anything.
+What this does, in plain terms: it looks for the folder your organizer mounted into your server
+(normally `/opt/auplc-assets/mm2_workshop_assets`), copies the files into your workspace, and
+rebuilds the fine-tuned policy so it is ready to run. It takes a few minutes and prints `done` when
+finished. Running it again is safe - it skips anything already in place.
 
-> If assets were not staged, skip this step: the notebooks fall back to downloading the base
-> model and dataset from the Hugging Face Hub at run time (needs network access and is slow).
+**If it prints "No workshop assets found":** the files were not mounted into your server. Ask your
+organizer for the folder path and run the command again with that path, for example:
 
-## 3. Run the notebooks
+```bash
+ASSETS_SRC=/the/path/your/organizer/gives/you scripts/fetch_assets.sh
+```
+
+After it finishes, this is where your files live (you do not need to touch them):
+
+| What | Where it lands in your server |
+|---|---|
+| Base model + datasets | `~/.cache/huggingface` |
+| Ready-made fine-tuned policy | `~/checkpoints/reference/pretrained_model` |
+
+## Step 4 - Run the two notebooks
+
+**Do this on: the file browser on the left of your server.** Double-click a notebook to open it,
+then use the menu **Run → Run All Cells**.
 
 | Notebook | What it does |
 |---|---|
-| `finetune_molmoact2_libero.ipynb` | ROCm smoke-test → load the base checkpoint → open-loop DROID validation → **LoRA fine-tune** a few steps → closed-loop LIBERO eval of the fine-tuned policy. |
-| `interactive_sim_molmoact2_libero.ipynb` | Standalone: drives the fine-tuned policy **live in LIBERO**, embedded right in the notebook. Type an instruction, watch the arm act. No dependency on notebook 1. |
+| `finetune_molmoact2_libero.ipynb` | Checks the GPU → loads the base model → validates it on real robot data → runs a short **LoRA fine-tune** → evaluates the fine-tuned policy in the LIBERO simulator. |
+| `interactive_sim_molmoact2_libero.ipynb` | Drives the fine-tuned policy **live in the simulator, right inside the notebook**. Type an instruction and watch the arm act. Works on its own - it does not need notebook 1. |
 
-Open each and **Run All**. The interactive sim needs **no extra port**: it is served inside your
-session and proxied through your existing JupyterHub route via
-[`jupyter-server-proxy`][jsp], then embedded with an `IFrame`.
+The live simulator appears **inside the notebook** - there is no extra window to open and no extra
+web address to visit.
 
-[jsp]: https://github.com/jupyterhub/jupyter-server-proxy
+---
 
-## Which weights run in the demo?
+## Which policy runs in the demo?
 
-Both the closed-loop eval (notebook 1, Step 5) and the interactive sim default to our
-**fine-tuned reference checkpoint** at `~/checkpoints/reference/pretrained_model` (staged by
-`fetch_assets.sh` in step 2). A short in-notebook LoRA run proves the training loop but will not
-fully converge, so the reference checkpoint is what gives a compelling demo.
+By default, both the evaluation in notebook 1 (Step 5) and the live simulator use our **ready-made
+fine-tuned policy** at `~/checkpoints/reference/pretrained_model` (put there by `fetch_assets.sh` in
+Step 3). The short fine-tune you run in notebook 1 proves the training loop works, but it is far too
+short to be good on its own - so the ready-made policy is what gives a strong demo.
 
-Override the policy from a cell or the pod env:
+You can change what runs by setting any of these in a notebook cell before you run it (or just leave
+them alone for the default demo):
 
-| Var | Default | Meaning |
+| Setting | Default | Meaning |
 |---|---|---|
-| `POLICY_PATH` | (unset) | Explicit checkpoint: a local dir **or** a Hugging Face repo id. Wins over the default. |
-| `PREFER_TRAINED` | `0` | `1` = eval the checkpoint *this* notebook run just produced instead of the reference. |
-| `SUITE` | `libero_object` | LIBERO task suite. |
-| `TASK_ID` | `3` | Task within the suite. |
-| `STEPS` | `10` | LoRA steps in notebook 1 (raise for real training). |
-| `FT_MODE` | `lora_vlm` | `lora_vlm` / `action_expert_only` / `full`. |
+| `POLICY_PATH` | (unset) | Use a specific checkpoint instead: a folder on the server **or** a Hugging Face repo id. Overrides everything below. |
+| `PREFER_TRAINED` | `0` | `1` = evaluate the checkpoint your own notebook run just produced, instead of the ready-made one. |
+| `SUITE` | `libero_object` | Which LIBERO task family to use. |
+| `TASK_ID` | `3` | Which task within that family. |
+| `STEPS` | `10` | How many fine-tune steps notebook 1 runs (raise this for real training). |
+| `FT_MODE` | `lora_vlm` | Fine-tune style: `lora_vlm`, `action_expert_only`, or `full`. |
 
-Training outputs land under `~/outputs` and `~/checkpoints`; small eval artifacts under
-`~/outputs`. Model weights and large videos stay on the machine (never re-hosted here).
+Your training results land under `~/outputs` and `~/checkpoints`. Model weights and large videos
+stay on the machine and are not uploaded anywhere.

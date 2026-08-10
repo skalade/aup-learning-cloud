@@ -2,194 +2,191 @@
 
 # Fine-tuning course - organizer & developer guide
 
-Everything needed to **stand up** the MolmoAct2 fine-tuning workshop and to **reproduce it
-offline** on your own Strix Halo box before it ships to the AUP Learning Cloud cluster.
+This guide sets up the MolmoAct2 fine-tuning workshop on one AMD **Strix Halo** machine, end to end:
+build the course image, deploy the JupyterHub server, put the large files in place, and hand each
+attendee a web address. When you are done, an attendee just opens that address, logs in, runs one
+command, and clicks **Run All** - with no downloading at the venue.
 
-> **Workshop attendee?** You do not need this file. Your environment is already built and the
-> assets are staged for you - follow **[README.md](README.md)** (no `sudo`, no building).
+> **Just attending?** You do not need this file - follow **[README.md](README.md)** instead.
 
-Two audiences, cleanly separated:
-
-- **Organizer** - has `sudo`/root on the deploy host. Builds the course image, deploys
-  JupyterHub, hosts the 65 GB assets, and wires them into user pods. Parts **A** and **B**.
-- **Developer** - reproduces the whole thing offline on one Strix Halo to verify a change before
-  merge. Part **C** (uses A + B locally).
-
-The attendee experience these steps produce: pick the course on the spawn page, run one no-`sudo`
-copy command, **Run All** on two notebooks - with **zero Hub downloads at the venue**.
+Every step below says **where to run it**. Do them in order. You need a Strix Halo box running
+**Ubuntu 24.04** where you have `sudo` (admin) rights, and about **120 GB free** disk.
 
 ---
 
-## Part A - Build & deploy the course (organizer, needs `sudo`)
+## Step 1 - Prepare the machine (once per box)
 
-### A0. Prerequisites (once per box)
+**Run this on: the Strix Halo box (a terminal, with sudo).**
 
-Follow the repo top-level `README.md` "Quick Start": OEM kernel for Ryzen AI APUs, Docker with
-non-root access, `build-essential`, and the installer TUI deps. Budget **~150 GB free** (image +
-65 GB bundle + the cache it expands into) on **Ubuntu 24.04**.
-
-### A1. Clone the repo and check out the branch
+Install the prerequisites from the repository's top-level `README.md` "Quick Start": the OEM kernel
+for Ryzen AI APUs, Docker set up for non-root use, `build-essential`, and the installer's terminal
+UI dependencies. Then confirm Docker works without sudo:
 
 ```bash
-git clone <your-fork>/aup-learning-cloud.git
+docker run --rm hello-world
+```
+
+If that prints a success message, the machine is ready.
+
+## Step 2 - Get the course code
+
+**Run this on: the Strix Halo box.**
+
+```bash
+git clone <your-fork-url>/aup-learning-cloud.git
 cd aup-learning-cloud
 git checkout finetuning-interactive-sim
 ```
 
-### A2. Build the Finetuning course image
+Everything in the rest of this guide is run from inside this `aup-learning-cloud` folder.
 
-The notebooks, scripts and tests are baked into the image at build time (`projects/Finetuning/` ->
-`/ryzers/notebooks`), so build from this branch. Layers on top of `ghcr.io/amdresearch/auplc-base`
-(pulled automatically):
+## Step 3 - Build the course image
+
+**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
+
+This bakes the two notebooks and their helper scripts into a container image (the base model layers
+are pulled automatically and cached, so later rebuilds take under a minute):
 
 ```bash
 make -C dockerfiles finetuning GPU_TARGET=gfx1151
-# -> ghcr.io/amdresearch/auplc-finetuning:latest
 ```
 
-Rebuild the **single** Finetuning image in place with new layers when notebooks/scripts change -
-do not fork a parallel image. The heavy dependency layers cache, so doc/script/notebook edits
-rebuild in under a minute.
+The result is a local image named `ghcr.io/amdresearch/auplc-finetuning:latest`. When you change a
+notebook or script later, run this same command again to rebuild in place - do not create a second
+image.
 
-### A3. Deploy JupyterHub (k3s single node)
+## Step 4 - Deploy the JupyterHub server
+
+**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
 
 ```bash
-sudo ./auplc-installer install --gpu=strix-halo      # or: ./auplc-installer  (interactive TUI)
+sudo ./auplc-installer install --gpu=strix-halo
 ```
 
-Wait for pods to be Ready (`kubectl get pods -A`). The dev deploy auto-logs-in as user `student`
-and uses local images (no registry pull). The course is already registered in
-`runtime/values.yaml` under the **ROSCON 2026** group as **"Fine-tuning on GPUs"**
-(`Course-Finetuning` -> `auplc-finetuning`, strix-halo GPU, landing dir `/ryzers/notebooks`).
+This installs a small single-node Kubernetes (k3s) and the JupyterHub server on top of it, using the
+image you just built. Wait until it finishes and reports the pods are ready. When it is done it
+prints the **web address of the server** - it looks like `http://<this-machine's-address>:30890/`.
+**Write that address down; it is what you give attendees in Step 7.**
 
-> Storage: single-node uses k3s `local-path`; each user gets a writable home PVC over
-> `/home/jovyan`. Its 10Gi request is **not enforced**, so the ~64 GB of assets fit. Anything
-> baked into the image under `/home/jovyan` is hidden by that PVC - assets must be delivered at
-> runtime (Part B), not baked.
+The course "Fine-tuning on GPUs" is already registered, so it shows up on the login page
+automatically. Each attendee who logs in gets their own private notebook server with its own GPU
+slice and a writable home folder.
 
----
+> **Already have another JupyterHub running on this same box?** Two servers cannot share the same
+> name. On a fresh box this never happens. If it does (a shared dev box), the simplest fix is to
+> deploy on a machine that does not already run one - that keeps this command exactly as written,
+> with nothing to configure.
 
-## Part B - Host & deliver the 65 GB assets (organizer)
+## Step 5 - Put the workshop files on the machine
 
-The three large inputs (base checkpoint, LIBERO dataset, fine-tuned checkpoint) plus two small
-helpers ship as a split-tar **bundle** (`mm2_workshop_assets/`, ~65 GB) that lives on OneDrive.
-Get it onto persistent storage the cluster can reach, e.g.:
+**Run this on: any machine that can reach both your file store and the Strix Halo box.**
+
+The large inputs ship as one folder called `mm2_workshop_assets` (about **47 GB**), split into ~4 GB
+pieces so it copies easily. It is hosted on your team's shared drive (for this workshop, OneDrive).
+Its layout is:
 
 ```
 mm2_workshop_assets/
-  base/           -> HF cache: models--allenai--MolmoAct2-DROID          (base checkpoint, ~21 GB)
-  libero/         -> HF cache: datasets--allenai--MolmoAct2-LIBERO-Dataset (dataset, ~33 GB)
-  tokenizer/      -> HF cache: models--allenai--MolmoAct2-FAST-Tokenizer   (required by the policy)
-  droid_dataset/  -> HF cache: datasets--allenai--MolmoAct2-DROID-Dataset  (Step-3 open-loop, ~1.4 GB)
-  ft_checkpoint/  -> our fine-tuned checkpoint  (pretrained_model, ~11.5 GB)
-  unpack_bundle.sh  README.txt
+  base/           the base MolmoAct2-DROID checkpoint, stored in BF16   (~11 GB)
+  libero/         the LIBERO training dataset                            (~33 GB)
+  tokenizer/      a small tokenizer the model needs
+  droid_dataset/  a small real-robot dataset used by notebook 1, Step 3  (~1.4 GB)
+  ft_checkpoint/  the fine-tune "delta": the LoRA adapter + trained parts (~2.4 GB)
+  reconstruct_reference.py  unpack_bundle.sh  README.txt
 ```
 
-Assets are **staged (copied), never re-hosted** in this repo - copy the folder from wherever the
-workshop stores it. Pick one delivery path:
-
-### Option 1 (recommended for a real multi-user workshop): mount + self-serve
-
-Mount the asset folder **read-only into every user pod** at a fixed path (via the chart's
-`singleuser.storage.extraVolumes` / `extraVolumeMounts`), e.g. `/opt/auplc-assets/mm2_workshop_assets`.
-Attendees then run one no-`sudo` command in their pod:
+Copy that whole folder onto the Strix Halo box, for example:
 
 ```bash
-scripts/fetch_assets.sh          # auto-detects /opt/auplc-assets/...; ASSETS_SRC=<path> to override
+scp -r /path/to/mm2_workshop_assets  <user>@<strix-halo-address>:/opt/auplc-assets/mm2_workshop_assets
 ```
 
-`fetch_assets.sh` copies from the mount into each user's own `~/.cache/huggingface` and
-`~/checkpoints`. It accepts **either** the split-tar bundle **or** an already-unpacked dir
-(`hf_hub/` + `checkpoints/`), and is idempotent. If you prefer to mount an unpacked dir, expand
-the bundle once on the host first:
+> **Why is `ft_checkpoint/` so small, and what is the "delta"?** The fine-tuned policy is just the
+> frozen base model plus a small set of weights that changed during fine-tuning. Instead of shipping
+> the whole base model twice, we ship the base once (in BF16, the precision everyone runs in) and
+> only the small delta. The full fine-tuned checkpoint is rebuilt automatically from base + delta in
+> Step 6 - you do not do anything extra.
+
+## Step 6 - Deliver the files to attendees
+
+Pick **one** of the two options below.
+
+### Option A - Multi-user workshop: mount the folder into everyone's server
+
+**Run this on: the Strix Halo box (edit the chart, then re-run the installer or `helm upgrade`).**
+
+Mount the `mm2_workshop_assets` folder **read-only** into every attendee's server at the fixed path
+`/opt/auplc-assets/mm2_workshop_assets` (via the chart's `singleuser.storage.extraVolumes` and
+`extraVolumeMounts`). Each attendee then runs `scripts/fetch_assets.sh` once from a terminal in their
+server (this is exactly what README.md tells them). That script copies the files into their own
+workspace and rebuilds the full fine-tuned checkpoint from base + delta.
+
+### Option B - One or a few attendees: push the files straight into a running server
+
+**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
+
+After an attendee has started their server (Steps 1-2 of README.md), stream the files directly into
+it. This needs `kubectl` (admin), so it is your job, not the attendee's:
 
 ```bash
-projects/Finetuning/scripts/unpack_bundle.sh /path/to/mm2_workshop_assets /path/to/assets
-# mount /path/to/assets read-only; attendees run fetch_assets.sh (or set ASSETS_DIR and Run All)
+projects/Finetuning/scripts/prestage_to_pod.sh /opt/auplc-assets/mm2_workshop_assets
 ```
 
-### Option 2 (single-node / a few pods): push straight into the running pod
-
-After the attendee spawns their server, stream the bundle from the host into their pod (needs
-`kubectl`, so this is the organizer's job, not the attendee's):
+Defaults it uses: namespace `jupyterhub`, user `student`, pod `jupyter-student`, container
+`notebook`. If your attendee's username or namespace differs, set them first, for example:
 
 ```bash
-projects/Finetuning/scripts/prestage_to_pod.sh /path/to/mm2_workshop_assets
-# defaults: NAMESPACE=jupyterhub  NB_USER=student  POD=jupyter-student  CONTAINER=notebook
+NAMESPACE=jupyterhub NB_USER=alice POD=jupyter-alice \
+  projects/Finetuning/scripts/prestage_to_pod.sh /opt/auplc-assets/mm2_workshop_assets
 ```
 
-Files are written **as the pod user** (correct ownership) into `~/.cache/huggingface/hub` and
-`~/checkpoints/reference/pretrained_model`. The attendee then just **Runs All** (nothing to copy).
+This copies the files into the attendee's server and rebuilds the full fine-tuned checkpoint inside
+it. With Option B the attendee can skip `fetch_assets.sh` - their files are already in place.
 
-### Reference checkpoint - staging, not baking (compliance)
+## Step 7 - Give attendees the address
 
-We do **not** re-host model weights in the image or repo, and the home PVC hides anything baked
-under `/home/jovyan`, so the fine-tuned checkpoint (LeRobot format: `config.json`,
-`model.safetensors` ~11.5 GB, processor/normalizer stats, `train_config.json`) is provided at
-**runtime** at `~/checkpoints/reference/pretrained_model` (`REFERENCE_POLICY`). It is part of the
-bundle above; the delivery options place it. For scale, organizers may instead:
+Send each attendee:
 
-1. **Shared read-only mount** - one copy on a shared PV mounted into every pod (no per-user duplication).
-2. **initContainer / pre-puller** - copy it onto each user PVC before the notebook starts.
-3. **Hugging Face repo id** - publish the reference LoRA and set `POLICY_PATH`/`REFERENCE_POLICY` to the repo id.
+- the web address from Step 4 (`http://<this-machine's-address>:30890/`), and
+- their username and password.
+
+They then follow **[README.md](README.md)**. Done.
 
 ---
 
-## Part C - Developer local reproduction (offline, on one Strix Halo)
+## Developer check: reproduce the whole thing offline before you ship
 
-Verify the full pipeline end to end **before merge**, with no Hub downloads at run time. You
-download the inputs **once** (to build the bundle); the staging path then replays them into the
-caches so the attendee flow downloads nothing.
+**Run this on: a Strix Halo box, after Steps 1-5 above.**
 
-1. **Get the bundle** (`mm2_workshop_assets/`, ~65 GB) from OneDrive onto the box at a persistent
-   path, e.g. `~/mm2_asset_bundle`.
-2. **Build** the image (Part A2) and, if testing the full Hub path, **deploy** (Part A3).
-
-Then validate one of two ways:
-
-### C1. Fast path - run the notebooks headless in the course container (offline)
-
-No Hub, no k8s - the tightest loop to check a notebook/script change:
+To verify a change end to end without any network, run both notebooks headless against the staged
+files. First unpack the bundle into a plain folder and stage it into a local cache:
 
 ```bash
-BUNDLE=~/mm2_asset_bundle
-docker run --rm -it --network=host --ipc=host --shm-size 16G \
+# unpack the 47 GB bundle into ./assets (also rebuilds the full fine-tuned checkpoint)
+/opt/auplc-assets/mm2_workshop_assets/unpack_bundle.sh /opt/auplc-assets/assets
+
+# stage into the caches the notebooks read (base model, dataset, fine-tuned policy)
+ASSETS_DIR=/opt/auplc-assets/assets \
+  projects/Finetuning/scripts/stage_assets.sh
+```
+
+Then execute each notebook fully offline on the GPU (this is the same environment attendees get):
+
+```bash
+docker run --rm --network=host --ipc=host --shm-size 16G \
   --device=/dev/kfd --device=/dev/dri --security-opt seccomp=unconfined \
   --group-add video --group-add render \
-  -v "$BUNDLE":/opt/auplc-assets/mm2_workshop_assets:ro \
-  ghcr.io/amdresearch/auplc-finetuning:latest bash -lc '
-    scripts/fetch_assets.sh &&                                   # tar bundle -> HF cache + checkpoint
-    export HF_HUB_OFFLINE=1 &&                                   # prove no network is used
-    jupyter nbconvert --to notebook --execute --inplace \
-      --ExecutePreprocessor.timeout=-1 finetune_molmoact2_libero.ipynb &&
-    jupyter nbconvert --to notebook --execute --inplace \
-      --ExecutePreprocessor.timeout=-1 interactive_sim_molmoact2_libero.ipynb'
+  -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+  -v "$HOME/.cache":/home/jovyan/.cache \
+  -v "$HOME/checkpoints":/home/jovyan/checkpoints \
+  -v "$HOME/outputs":/home/jovyan/outputs \
+  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest -c '
+    cd /ryzers/notebooks
+    /opt/train-venv/bin/python -m ipykernel install --user --name tv >/dev/null 2>&1
+    jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=tv \
+      --ExecutePreprocessor.timeout=-1 --output /home/jovyan/outputs/nb1.ipynb \
+      finetune_molmoact2_libero.ipynb'
 ```
 
-### C2. Full path - deploy the Hub and mimic an attendee
-
-Deploy (A3), spawn the **"Fine-tuning on GPUs"** pod, deliver assets (Part B, Option 1 or 2),
-then open the two notebooks and **Run All** exactly as an attendee would.
-
----
-
-## Notes / gotchas
-
-- **The fine-tuned checkpoint reuses the base weights.** Loading it (eval or interactive) resolves
-  `allenai/MolmoAct2-DROID` from the HF cache, so the base **must** be present. The bundle includes
-  it and every delivery path places it - never ship only the fine-tuned checkpoint.
-- **Fully offline after staging.** Set `HF_HUB_OFFLINE=1` to prove no Hub access is needed at run
-  time.
-- **LeRobot uses its own dataset root.** The Step-4 fine-tune loads the LIBERO dataset through
-  LeRobot, which resolves datasets under `$HF_LEROBOT_HOME/{repo_id}`
-  (`~/.cache/huggingface/lerobot/allenai/MolmoAct2-LIBERO-Dataset`) - **not** the standard HF hub
-  cache. The staging scripts therefore also symlink that path to the hub-cached snapshot so offline
-  training reuses the same blobs instead of triggering a second ~33 GB download. If you ever
-  populate the hub cache by hand, recreate this link or offline training will fail with
-  `LocalEntryNotFoundError`.
-- **Assets are staged, never re-hosted** in this repo; they come from the OneDrive bundle.
-- **Verified path (full pipeline, offline).** On a single Strix Halo iGPU (gfx1151), with the bundle
-  staged and `HF_HUB_OFFLINE=1`, both notebooks run end to end with **no Hub access**:
-  notebook 1 (preflight cache-hit -> open-loop DROID replay -> LoRA fine-tune, checkpoint saved ->
-  closed-loop LIBERO eval `pc_success=100%`, `libero_object` task 3) in ~5 min, and notebook 2
-  (interactive sim server loads the fine-tuned checkpoint and reaches the `idle` ready state).
+A healthy run shows the closed-loop LIBERO evaluation reporting success and writes the executed
+notebook to `~/outputs`. Model weights and large videos stay on the machine (never re-hosted).

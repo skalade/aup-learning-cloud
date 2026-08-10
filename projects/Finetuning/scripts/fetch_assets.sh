@@ -22,6 +22,8 @@
 # It is idempotent: items already present are skipped, so re-running is safe.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PY="${PY:-/opt/train-venv/bin/python}"
 HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 HUB="$HF_HOME/hub"
 REFERENCE_POLICY="${REFERENCE_POLICY:-$HOME/checkpoints/reference/pretrained_model}"
@@ -82,11 +84,17 @@ if ls "$ASSETS_SRC"/base/base.tar.part-* >/dev/null 2>&1; then
   if ls "$ASSETS_SRC"/droid_dataset/droid_dataset.tar.part-* >/dev/null 2>&1; then
     _untar_hub datasets--allenai--MolmoAct2-DROID-Dataset "$ASSETS_SRC"/droid_dataset/droid_dataset.tar.part-*
   fi
-  if _have "$REFERENCE_POLICY"; then
-    echo "  -> fine-tuned checkpoint: already present, skipping"
+  if [ -f "$REFERENCE_POLICY/model.safetensors" ]; then
+    echo "  -> fine-tuned checkpoint: already built, skipping"
   else
-    echo "  -> fine-tuned checkpoint (-> $REF_PARENT)"
+    echo "  -> fine-tuned checkpoint delta (-> $REF_PARENT)"
     cat "$ASSETS_SRC"/ft_checkpoint/ft.tar.part-* | tar -C "$REF_PARENT" -xf -
+    # The fine-tuned checkpoint ships as a small "delta" (LoRA adapter + trained action-expert)
+    # plus a map of the frozen tensors it dropped. Rebuild the full checkpoint here by pulling
+    # those frozen tensors from the BF16 base we just extracted into the HF cache.
+    echo "  -> rebuilding full fine-tuned checkpoint from BF16 base + delta"
+    "$PY" "$HERE/reconstruct_reference.py" \
+      --delta "$REFERENCE_POLICY" --out "$REFERENCE_POLICY" --hf-home "$HF_HOME"
   fi
 
 # ------------------------------------------------------------- (b) unpacked assets dir -------

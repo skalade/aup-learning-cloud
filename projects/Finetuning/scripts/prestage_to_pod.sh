@@ -55,7 +55,14 @@ if ls "$BUNDLE"/droid_dataset/droid_dataset.tar.part-* >/dev/null 2>&1; then
   extract "$HUB" "$BUNDLE"/droid_dataset/droid_dataset.tar.part-*
 fi
 # fine-tuned checkpoint -> checkpoints/reference/pretrained_model
+# It ships as a small delta (LoRA adapter + trained action-expert); rebuild the full checkpoint
+# inside the pod from the BF16 base we just streamed into the HF cache.
 extract "$REF_PARENT" "$BUNDLE"/ft_checkpoint/ft.tar.part-*
+echo "  rebuilding full fine-tuned checkpoint in pod (BF16 base + delta)"
+kx bash -lc '/opt/train-venv/bin/python /ryzers/notebooks/scripts/reconstruct_reference.py \
+  --delta /home/jovyan/checkpoints/reference/pretrained_model \
+  --out   /home/jovyan/checkpoints/reference/pretrained_model \
+  --hf-home /home/jovyan/.cache/huggingface'
 
 # LeRobot (Step-4 fine-tune) resolves datasets under $HF_LEROBOT_HOME/{repo_id}, NOT the HF hub
 # cache. Link the hub-cached LIBERO dataset there inside the pod so offline training reuses the same

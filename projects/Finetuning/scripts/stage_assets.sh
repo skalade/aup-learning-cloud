@@ -23,6 +23,8 @@
 # Optional overrides: HF_HOME, REFERENCE_POLICY.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PY="${PY:-/opt/train-venv/bin/python}"
 ASSETS_DIR="${1:-${ASSETS_DIR:-}}"
 HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 REFERENCE_POLICY="${REFERENCE_POLICY:-$HOME/checkpoints/reference/pretrained_model}"
@@ -68,8 +70,15 @@ else
 fi
 
 # 2) Fine-tuned reference checkpoint -> $REFERENCE_POLICY
+# It ships as a small "delta" (LoRA adapter + trained action-expert) plus a map of the frozen
+# tensors it dropped; rebuild the full checkpoint from the BF16 base staged in step 1.
 if [ -d "$ASSETS_DIR/checkpoints/reference/pretrained_model" ]; then
   _copy "$ASSETS_DIR/checkpoints/reference/pretrained_model" "$REFERENCE_POLICY"
+  if [ ! -f "$REFERENCE_POLICY/model.safetensors" ]; then
+    echo "  rebuilding full fine-tuned checkpoint from BF16 base + delta"
+    "$PY" "$HERE/reconstruct_reference.py" \
+      --delta "$REFERENCE_POLICY" --out "$REFERENCE_POLICY" --hf-home "$HF_HOME"
+  fi
 else
   echo "  (no checkpoints/reference/pretrained_model in ASSETS_DIR - skipping)"
 fi
