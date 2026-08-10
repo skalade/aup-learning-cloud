@@ -1,93 +1,72 @@
-# ROSCon 2026: VLA Finetuning
+<!-- Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved. -->
 
-LoRA fine-tune the **MolmoAct2** vision-language-action model on the **LIBERO** simulator and
-demo the result interactively - all on AMD hardware (a single Strix Halo iGPU, or a multi-GPU
-AMD Instinct node). Everything runs inside the course container; no extra ports are required.
+# ROSCon 2026: VLA Fine-tuning
 
-Environment checks:
+LoRA fine-tune the **MolmoAct2** vision-language-action model on the **LIBERO** simulator, then
+drive the fine-tuned policy live in the sim - all on a single AMD **Strix Halo** iGPU, from your
+browser. Everything runs inside this course environment; there is nothing to install and **no
+`sudo`** - you only need your AUP Learning Cloud login.
+
+> Setting up the workshop (building the image, deploying JupyterHub, hosting the assets)? That is
+> the organizer/developer job - see **[ORGANIZER.md](ORGANIZER.md)**. This page is for attendees.
+
+## 1. Start your environment
+
+On the AUP Learning Cloud spawn page pick **ROSCON 2026 → "Fine-tuning on GPUs"** and start the
+server. It lands you in `/ryzers/notebooks` with the two notebooks below. (Optional) sanity-check
+the GPU and the MolmoAct2 stack from a terminal:
 
 ```bash
-/ryzers/test_torch.sh
-/ryzers/test_molmoact2.sh
+/ryzers/test_torch.sh        # ROCm torch sees the GPU
+/ryzers/test_molmoact2.sh    # MolmoAct2 + LIBERO training stack imports
 ```
 
-Models are cached under `~/.cache/huggingface`. Training outputs and checkpoints are written
-under `~/outputs` and `~/checkpoints`.
+## 2. Load the workshop assets (once, no download)
 
-## Notebooks
+The base checkpoint, the LIBERO dataset and our fine-tuned checkpoint are large (~65 GB total),
+so instead of downloading them at the venue your instructor stages them on shared storage. Copy
+them into your pod once - a few minutes - with:
+
+```bash
+scripts/fetch_assets.sh
+```
+
+That places everything in your `~/.cache/huggingface` and `~/checkpoints`. The notebooks then
+**detect the cache and skip every download automatically** - you do not toggle anything.
+
+> If assets were not staged, skip this step: the notebooks fall back to downloading the base
+> model and dataset from the Hugging Face Hub at run time (needs network access and is slow).
+
+## 3. Run the notebooks
 
 | Notebook | What it does |
 |---|---|
-| `finetune_molmoact2_libero.ipynb` | End-to-end training path: model/ROCm smoke-test, base checkpoint + dataset prefetch, open-loop DROID validation, LoRA fine-tune, and closed-loop LIBERO eval. |
-| `interactive_sim_molmoact2_libero.ipynb` | Standalone, self-contained interactive LIBERO demo. Runs the fine-tuned policy in the simulator (**synchronous** plan-execute-replan loop) and embeds the live viewport inline in the notebook. No dependency on the training notebook. |
+| `finetune_molmoact2_libero.ipynb` | ROCm smoke-test → load the base checkpoint → open-loop DROID validation → **LoRA fine-tune** a few steps → closed-loop LIBERO eval of the fine-tuned policy. |
+| `interactive_sim_molmoact2_libero.ipynb` | Standalone: drives the fine-tuned policy **live in LIBERO**, embedded right in the notebook. Type an instruction, watch the arm act. No dependency on notebook 1. |
 
-## Interactive sim server
-
-`scripts/interactive_server_ft.py` is the small HTTP server the interactive notebook launches.
-It loads a LeRobot-format policy, runs `lerobot_eval.rollout` (the same closed-loop used by the
-eval), and serves a minimal web UI (single-frame `/frame` polling + a command box).
-
-There is **no extra port to forward**: the server binds an internal port and is reached through
-each JupyterHub user's existing notebook route via [`jupyter-server-proxy`][jsp] at
-`{JUPYTERHUB_SERVICE_PREFIX}/proxy/8080/`. The course Dockerfile installs `jupyter-server-proxy`.
+Open each and **Run All**. The interactive sim needs **no extra port**: it is served inside your
+session and proxied through your existing JupyterHub route via
+[`jupyter-server-proxy`][jsp], then embedded with an `IFrame`.
 
 [jsp]: https://github.com/jupyterhub/jupyter-server-proxy
 
-## Choosing the policy weights
+## Which weights run in the demo?
 
-Both the closed-loop eval and the interactive sim default to a **fine-tuned checkpoint**:
+Both the closed-loop eval (notebook 1, Step 5) and the interactive sim default to our
+**fine-tuned reference checkpoint** at `~/checkpoints/reference/pretrained_model` (staged by
+`fetch_assets.sh` in step 2). A short in-notebook LoRA run proves the training loop but will not
+fully converge, so the reference checkpoint is what gives a compelling demo.
 
-- `POLICY_PATH` - explicit override; a local LeRobot checkpoint dir **or** a Hugging Face repo id.
-- `REFERENCE_POLICY` - default location, `~/checkpoints/reference/pretrained_model`.
-
-A short in-notebook LoRA run demonstrates the pipeline but will not fully converge; for a strong
-demo, stage a longer-trained fine-tuned checkpoint at `REFERENCE_POLICY` (or set `POLICY_PATH`).
-Large checkpoints and datasets are **not** baked into the image - they are downloaded from the
-Hugging Face Hub at run time (base model / dataset) or staged onto the user's persistent storage
-(the fine-tuned checkpoint), and cached there for reuse.
-
-## Offline assets (no Hub re-download)
-
-For the workshop the large inputs are hosted on local storage and copied into the caches before
-the notebook runs, so nothing is downloaded from the Hub at the venue. Provide them via an
-`ASSETS_DIR` folder with this layout:
-
-```
-<ASSETS_DIR>/
-  hf_hub/
-    models--allenai--MolmoAct2-DROID/            # base checkpoint
-    models--allenai--MolmoAct2-FAST-Tokenizer/   # required by the policy (tiny)
-    datasets--allenai--MolmoAct2-LIBERO-Dataset/ # fine-tuning dataset
-    datasets--allenai--MolmoAct2-DROID-Dataset/  # optional: Step-3 open-loop check
-  checkpoints/
-    reference/pretrained_model/                  # our fine-tuned checkpoint
-```
-
-Stage it either way:
-
-- **In the notebook** - set `ASSETS_DIR=/path/to/assets`; both notebooks copy the items into
-  `$HF_HOME/hub` and `$REFERENCE_POLICY` on first run (idempotent - skips what already exists).
-- **Manually / at build** - `ASSETS_DIR=/path/to/assets scripts/stage_assets.sh`.
-
-Assets are staged (copied), never re-hosted in this repo - copy the folder from wherever the
-workshop stores it before running.
-
-To load the bundle straight into a running pod (no mount), use
-`scripts/prestage_to_pod.sh <bundle_dir>`. For the full from-scratch bring-up of both notebooks on
-a fresh box, see [`REPRODUCE.md`](REPRODUCE.md).
-
-## Useful environment variables
+Override the policy from a cell or the pod env:
 
 | Var | Default | Meaning |
 |---|---|---|
-| `ASSETS_DIR` | (unset) | Local folder holding the pre-downloaded base/dataset/checkpoint; staged into the caches so nothing is fetched from the Hub. |
-| `POLICY_PATH` | (unset) | Explicit policy checkpoint (dir or Hub repo id); overrides the default. |
-| `REFERENCE_POLICY` | `~/checkpoints/reference/pretrained_model` | Default fine-tuned checkpoint location. |
-| `SUITE` | `libero_object` | LIBERO task suite for the interactive sim. |
+| `POLICY_PATH` | (unset) | Explicit checkpoint: a local dir **or** a Hugging Face repo id. Wins over the default. |
+| `PREFER_TRAINED` | `0` | `1` = eval the checkpoint *this* notebook run just produced instead of the reference. |
+| `SUITE` | `libero_object` | LIBERO task suite. |
 | `TASK_ID` | `3` | Task within the suite. |
-| `RT_PORT` | `8080` | Internal port for the sim server (proxied, never exposed directly). |
-| `BASE_CKPT` | `allenai/MolmoAct2-DROID` | Base checkpoint to LoRA-adapt from. |
-| `DATASET_REPO` | `allenai/MolmoAct2-LIBERO-Dataset` | Fine-tuning dataset. |
+| `STEPS` | `10` | LoRA steps in notebook 1 (raise for real training). |
+| `FT_MODE` | `lora_vlm` | `lora_vlm` / `action_expert_only` / `full`. |
 
-The training command runs single-GPU on Strix Halo and multi-GPU on an AMD Instinct node
-automatically (it launches `N_GPUS` processes).
+Training outputs land under `~/outputs` and `~/checkpoints`; small eval artifacts under
+`~/outputs`. Model weights and large videos stay on the machine (never re-hosted here).

@@ -81,7 +81,7 @@ RUN mkdir -p \
       /home/jovyan/checkpoints \
       /home/jovyan/outputs \
       /ryzers/notebooks
-# Proxy the interactive LIBERO sim server (interactive simulation notebook) through each JupyterHub
+# Proxy the interactive LIBERO sim server (notebook Section 6) through each JupyterHub
 # user's existing notebook route, so no extra port must be exposed (same pattern the
 # LocalInference course uses for its Streamlit UI). Installed into the system python that
 # runs the single-user Jupyter server.
@@ -89,6 +89,11 @@ RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages \
       jupyter-server-proxy
 
 COPY ./course_data /ryzers/notebooks
+# Make the shipped shell scripts executable and expose the env-check scripts at the
+# /ryzers/test_*.sh paths the README documents (same convention as the other courses).
+RUN chmod +x /ryzers/notebooks/tests/*.sh /ryzers/notebooks/scripts/*.sh \
+    && ln -sf /ryzers/notebooks/tests/test_torch.sh     /ryzers/test_torch.sh \
+    && ln -sf /ryzers/notebooks/tests/test_molmoact2.sh /ryzers/test_molmoact2.sh
 RUN chown -R jovyan:100 \
       /home/jovyan/.cache \
       /home/jovyan/checkpoints \
