@@ -100,6 +100,20 @@ else
   exit 2
 fi
 
+# LeRobot (used by the Step-4 fine-tune) resolves datasets under $HF_LEROBOT_HOME/{repo_id}, which is
+# NOT the standard HF hub cache. Expose the hub-cached LIBERO dataset there via a symlink so offline
+# training reads the very same blobs instead of triggering a second 33 GB download.
+LEROBOT_HOME="${HF_LEROBOT_HOME:-$HF_HOME/lerobot}"
+_link_lerobot_dataset() {  # <hub-cache-dirname> <repo_id>
+  local hubname="$1" repo="$2" snap
+  snap="$(ls -d "$HUB/$hubname"/snapshots/*/ 2>/dev/null | head -1)"
+  [ -n "$snap" ] || { echo "  WARN: no snapshot for $hubname; LeRobot link skipped"; return 0; }
+  mkdir -p "$LEROBOT_HOME/$(dirname "$repo")"
+  ln -sfn "${snap%/}" "$LEROBOT_HOME/$repo"
+  echo "  -> LeRobot dataset link: $LEROBOT_HOME/$repo"
+}
+_link_lerobot_dataset datasets--allenai--MolmoAct2-LIBERO-Dataset allenai/MolmoAct2-LIBERO-Dataset
+
 echo "=== verify ==="
 du -sh "$HUB"/models--allenai--MolmoAct2-DROID            2>/dev/null || true
 du -sh "$HUB"/datasets--allenai--MolmoAct2-LIBERO-Dataset 2>/dev/null || true

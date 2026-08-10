@@ -180,6 +180,16 @@ then open the two notebooks and **Run All** exactly as an attendee would.
   it and every delivery path places it - never ship only the fine-tuned checkpoint.
 - **Fully offline after staging.** Set `HF_HUB_OFFLINE=1` to prove no Hub access is needed at run
   time.
+- **LeRobot uses its own dataset root.** The Step-4 fine-tune loads the LIBERO dataset through
+  LeRobot, which resolves datasets under `$HF_LEROBOT_HOME/{repo_id}`
+  (`~/.cache/huggingface/lerobot/allenai/MolmoAct2-LIBERO-Dataset`) - **not** the standard HF hub
+  cache. The staging scripts therefore also symlink that path to the hub-cached snapshot so offline
+  training reuses the same blobs instead of triggering a second ~33 GB download. If you ever
+  populate the hub cache by hand, recreate this link or offline training will fail with
+  `LocalEntryNotFoundError`.
 - **Assets are staged, never re-hosted** in this repo; they come from the OneDrive bundle.
-- **Verified path:** on a single Strix Halo iGPU (gfx1151), the offline eval of the bundle's
-  fine-tuned checkpoint returned `pc_success=100%` (`libero_object`, task 3) in ~26 s.
+- **Verified path (full pipeline, offline).** On a single Strix Halo iGPU (gfx1151), with the bundle
+  staged and `HF_HUB_OFFLINE=1`, both notebooks run end to end with **no Hub access**:
+  notebook 1 (preflight cache-hit -> open-loop DROID replay -> LoRA fine-tune, checkpoint saved ->
+  closed-loop LIBERO eval `pc_success=100%`, `libero_object` task 3) in ~5 min, and notebook 2
+  (interactive sim server loads the fine-tuned checkpoint and reaches the `idle` ready state).

@@ -57,6 +57,20 @@ fi
 # fine-tuned checkpoint -> checkpoints/reference/pretrained_model
 extract "$REF_PARENT" "$BUNDLE"/ft_checkpoint/ft.tar.part-*
 
+# LeRobot (Step-4 fine-tune) resolves datasets under $HF_LEROBOT_HOME/{repo_id}, NOT the HF hub
+# cache. Link the hub-cached LIBERO dataset there inside the pod so offline training reuses the same
+# blobs rather than re-downloading 33 GB.
+kx bash -lc '
+  HF_HOME=/home/jovyan/.cache/huggingface
+  LEROBOT_HOME="${HF_LEROBOT_HOME:-$HF_HOME/lerobot}"
+  snap="$(ls -d "$HF_HOME"/hub/datasets--allenai--MolmoAct2-LIBERO-Dataset/snapshots/*/ 2>/dev/null | head -1)"
+  if [ -n "$snap" ]; then
+    mkdir -p "$LEROBOT_HOME/allenai"
+    ln -sfn "${snap%/}" "$LEROBOT_HOME/allenai/MolmoAct2-LIBERO-Dataset"
+    echo "  LeRobot dataset link: $LEROBOT_HOME/allenai/MolmoAct2-LIBERO-Dataset"
+  fi
+'
+
 echo "=== verify (sizes in pod) ==="
 kx bash -lc "
   du -sh '$HUB'/models--allenai--MolmoAct2-DROID 2>/dev/null
