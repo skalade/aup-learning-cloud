@@ -632,6 +632,29 @@ singleuser:
   storage:
     dynamic:
       storageClass: local-path
+    # --- Workshop assets: read-only host mount + auto-link at spawn (zero-copy) ---
+    # The organizer pre-stages assets once at /opt/auplc-assets/assets; this mounts that
+    # tree read-only into every server. fetch_assets.sh (postStart, below) symlinks it into
+    # each attendee's cache. Harmless for non-Finetuning courses (nothing references it).
+    extraVolumes:
+      - name: workshop-assets
+        hostPath:
+          path: /opt/auplc-assets
+          type: DirectoryOrCreate
+    extraVolumeMounts:
+      - name: workshop-assets
+        mountPath: /opt/auplc-assets
+        readOnly: true
+
+  # Auto-stage the workshop assets when a server starts. No-op for images that do not ship
+  # fetch_assets.sh, and never blocks startup (|| true).
+  lifecycleHooks:
+    postStart:
+      exec:
+        command:
+          - "sh"
+          - "-c"
+          - "[ -x /ryzers/notebooks/scripts/fetch_assets.sh ] && /ryzers/notebooks/scripts/fetch_assets.sh >/home/jovyan/.fetch_assets.log 2>&1 || true"
 
 # Use NodePort for direct access
 proxy:

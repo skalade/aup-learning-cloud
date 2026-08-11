@@ -107,41 +107,35 @@ scp -r /path/to/mm2_workshop_assets  <user>@<strix-halo-address>:/opt/auplc-asse
 > only the small delta. The full fine-tuned checkpoint is rebuilt automatically from base + delta in
 > Step 6 - you do not do anything extra.
 
-## Step 6 - Deliver the files to attendees
+## Step 6 - Pre-stage the files once (before the workshop)
 
-Pick **one** of the two options below.
+**Run this on: the Strix Halo box, once, before attendees arrive.**
 
-### Option A - Multi-user workshop: mount the folder into everyone's server
-
-**Run this on: the Strix Halo box (edit the chart, then re-run the installer or `helm upgrade`).**
-
-Mount the `mm2_workshop_assets` folder **read-only** into every attendee's server at the fixed path
-`/opt/auplc-assets/mm2_workshop_assets` (via the chart's `singleuser.storage.extraVolumes` and
-`extraVolumeMounts`). Each attendee then runs `scripts/fetch_assets.sh` once from a terminal in their
-server (this is exactly what README.md tells them). That script copies the files into their own
-workspace and rebuilds the full fine-tuned checkpoint from base + delta.
-
-### Option B - One or a few attendees: push the files straight into a running server
-
-**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
-
-After an attendee has started their server (Steps 1-2 of README.md), stream the files directly into
-it. This needs `kubectl` (admin), so it is your job, not the attendee's:
+Unpack the bundle one time into a shared, read-only folder and rebuild the full fine-tuned
+checkpoint once. Every attendee's server then **links** to this single copy instantly - nothing is
+downloaded or copied per person, and attendees never touch it.
 
 ```bash
-projects/Finetuning/scripts/prestage_to_pod.sh /opt/auplc-assets/mm2_workshop_assets
+sudo mkdir -p /opt/auplc-assets/assets
+docker run --rm --user 0:0 -v /opt/auplc-assets:/opt/auplc-assets \
+  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest \
+  /ryzers/notebooks/scripts/prestage_shared.sh \
+    /opt/auplc-assets/mm2_workshop_assets /opt/auplc-assets/assets
 ```
 
-Defaults it uses: namespace `jupyterhub`, user `student`, pod `jupyter-student`, container
-`notebook`. If your attendee's username or namespace differs, set them first, for example:
+This writes `/opt/auplc-assets/assets` - the base model and datasets under `hf_hub/`, and the
+rebuilt fine-tuned policy under `checkpoints/reference/pretrained_model/` - and makes it
+world-readable. It takes a couple of minutes and prints `Shared assets ready` when done.
 
-```bash
-NAMESPACE=jupyterhub NB_USER=alice POD=jupyter-alice \
-  projects/Finetuning/scripts/prestage_to_pod.sh /opt/auplc-assets/mm2_workshop_assets
-```
+That is all you do. The standard install already mounts `/opt/auplc-assets` **read-only** into every
+attendee's server, and the moment a server starts it links these files into that attendee's
+workspace automatically - no command, no `sudo`, no downloading. Attendees just open the notebooks
+and run.
 
-This copies the files into the attendee's server and rebuilds the full fine-tuned checkpoint inside
-it. With Option B the attendee can skip `fetch_assets.sh` - their files are already in place.
+> **Ran the installer before staging?** That is fine - the mount is part of the standard install, so
+> any server started after Step 6 picks the files up automatically. If a server was already running,
+> that attendee should restart it (**File → Hub Control Panel → Stop My Server**, then **Start**) so
+> the one-time link step runs.
 
 ## Step 7 - Give attendees the address
 
@@ -156,37 +150,27 @@ They then follow **[README.md](README.md)**. Done.
 
 ## Developer check: reproduce the whole thing offline before you ship
 
-**Run this on: a Strix Halo box, after Steps 1-5 above.**
+**Run this on: a Strix Halo box, after Steps 1-6 above.**
 
-To verify a change end to end without any network, run both notebooks headless against the staged
-files. First unpack the bundle into a plain folder and stage it into a local cache:
-
-```bash
-# unpack the 47 GB bundle into ./assets (also rebuilds the full fine-tuned checkpoint)
-/opt/auplc-assets/mm2_workshop_assets/unpack_bundle.sh /opt/auplc-assets/assets
-
-# stage into the caches the notebooks read (base model, dataset, fine-tuned policy)
-ASSETS_DIR=/opt/auplc-assets/assets \
-  projects/Finetuning/scripts/stage_assets.sh
-```
-
-Then execute each notebook fully offline on the GPU (this is the same environment attendees get):
+To verify a change end to end without any network, run a notebook headless against the same shared
+files the attendees use. This links them into a scratch cache exactly the way an attendee's server
+does (zero-copy), then executes the notebook fully offline on the GPU:
 
 ```bash
 docker run --rm --network=host --ipc=host --shm-size 16G \
   --device=/dev/kfd --device=/dev/dri --security-opt seccomp=unconfined \
   --group-add video --group-add render \
+  -v /opt/auplc-assets:/opt/auplc-assets:ro \
+  --tmpfs /home/jovyan:mode=0777 \
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-  -v "$HOME/.cache":/home/jovyan/.cache \
-  -v "$HOME/checkpoints":/home/jovyan/checkpoints \
-  -v "$HOME/outputs":/home/jovyan/outputs \
-  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest -c '
-    cd /ryzers/notebooks
+  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest -lc '
+    scripts/fetch_assets.sh                     # links the shared assets into this run (zero-copy)
+    mkdir -p /home/jovyan/outputs
     /opt/train-venv/bin/python -m ipykernel install --user --name tv >/dev/null 2>&1
     jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=tv \
       --ExecutePreprocessor.timeout=-1 --output /home/jovyan/outputs/nb1.ipynb \
       finetune_molmoact2_libero.ipynb'
 ```
 
-A healthy run shows the closed-loop LIBERO evaluation reporting success and writes the executed
-notebook to `~/outputs`. Model weights and large videos stay on the machine (never re-hosted).
+A healthy run shows the closed-loop LIBERO evaluation reporting success. Model weights and large
+videos stay on the machine (never re-hosted).

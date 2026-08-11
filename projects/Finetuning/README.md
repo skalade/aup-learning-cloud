@@ -49,37 +49,26 @@ and click **Start**. After about a minute you land in a file browser showing a f
 /ryzers/test_molmoact2.sh    # confirms the MolmoAct2 + LIBERO software imports
 ```
 
-## Step 3 - Load the workshop files (one command, no downloading)
+## Step 3 - Your files are already loaded (nothing to do)
 
-**Do this on: a terminal inside your server (New → Terminal).**
+**There is nothing to run here.** The base model, the training dataset, and a ready-made fine-tuned
+policy (about 47 GB together) are already on the machine. The moment your server started, they were
+linked into your workspace automatically - instantly, with nothing downloaded and nothing copied.
 
-The base model, the training dataset, and a ready-made fine-tuned policy are large (about 47 GB
-together). Your organizer has already placed them on the machine, so you do **not** download
-anything at the venue. Pull them into your own workspace with one command:
+This is where they are (you do not need to touch them):
+
+| What | Where it is in your server |
+|---|---|
+| Base model + datasets | `~/.cache/huggingface` |
+| Ready-made fine-tuned policy | `~/checkpoints/reference/pretrained_model` |
+
+**Only if a notebook says a file is missing** (rare): open a terminal (**New → Terminal**) and run
+this once. It re-links everything, needs no `sudo`, and is safe to run again:
 
 ```bash
 cd /ryzers/notebooks
 scripts/fetch_assets.sh
 ```
-
-What this does, in plain terms: it looks for the folder your organizer mounted into your server
-(normally `/opt/auplc-assets/mm2_workshop_assets`), copies the files into your workspace, and
-rebuilds the fine-tuned policy so it is ready to run. It takes a few minutes and prints `done` when
-finished. Running it again is safe - it skips anything already in place.
-
-**If it prints "No workshop assets found":** the files were not mounted into your server. Ask your
-organizer for the folder path and run the command again with that path, for example:
-
-```bash
-ASSETS_SRC=/the/path/your/organizer/gives/you scripts/fetch_assets.sh
-```
-
-After it finishes, this is where your files live (you do not need to touch them):
-
-| What | Where it lands in your server |
-|---|---|
-| Base model + datasets | `~/.cache/huggingface` |
-| Ready-made fine-tuned policy | `~/checkpoints/reference/pretrained_model` |
 
 ## Step 4 - Run the two notebooks
 
@@ -99,7 +88,7 @@ web address to visit.
 ## Which policy runs in the demo?
 
 By default, both the evaluation in notebook 1 (Step 5) and the live simulator use our **ready-made
-fine-tuned policy** at `~/checkpoints/reference/pretrained_model` (put there by `fetch_assets.sh` in
+fine-tuned policy** at `~/checkpoints/reference/pretrained_model` (already staged for you in
 Step 3). The short fine-tune you run in notebook 1 proves the training loop works, but it is far too
 short to be good on its own - so the ready-made policy is what gives a strong demo.
 
