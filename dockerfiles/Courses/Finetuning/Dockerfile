@@ -103,6 +103,9 @@ RUN chown -R jovyan:100 \
 ENV HOME=/home/jovyan \
     PATH="/opt/train-venv/bin:${PATH}" \
     HF_HOME=/home/jovyan/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
     LIBERO_CONFIG_PATH=/opt/libero-config \
     DROID_SERVER_DIR=/opt/molmoact2/examples/droid \
     OUT_DIR=/home/jovyan/outputs \
