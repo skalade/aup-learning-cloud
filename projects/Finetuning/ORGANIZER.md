@@ -110,6 +110,11 @@ that carries its own HF cache under `/opt/auplc-hf` and reference checkpoint und
 no shared mount, no per-attendee download. When you change a notebook or script later, run the same
 command to rebuild in place - do not create a second image.
 
+> **Shortcut - one command for Steps 4 + 5.** `make -C dockerfiles finetuning-baked GPU_TARGET=gfx1151`
+> pre-stages the bundle and then bakes it into the image in a single step. If no course image exists
+> yet it builds a code-only one first (the pre-stage needs the course Python), so this works even on a
+> fresh machine. Override the paths with `ASSETS_BUNDLE=` / `ASSETS_SRC=` if your layout differs.
+
 > **Build a code-only image** (no assets, e.g. for CI) with `ASSETS_SRC= make -C dockerfiles
 > finetuning GPU_TARGET=gfx1151`. The assets are passed to the build as a BuildKit named context, so
 > they are never copied into the git tree.
