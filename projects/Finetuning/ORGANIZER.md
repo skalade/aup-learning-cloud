@@ -10,7 +10,8 @@ command, and clicks **Run All** - with no downloading at the venue.
 > **Just attending?** You do not need this file - follow **[README.md](README.md)** instead.
 
 Every step below says **where to run it**. Do them in order. You need a Strix Halo box running
-**Ubuntu 24.04** where you have `sudo` (admin) rights, and about **120 GB free** disk.
+**Ubuntu 24.04** where you have `sudo` (admin) rights, and about **150 GB free** disk (the baked
+course image is ~50 GB; the pre-staged `assets/` tree and a saved image tar need room too).
 
 ---
 
@@ -40,58 +41,22 @@ git checkout finetuning-interactive-sim
 
 Everything in the rest of this guide is run from inside this `aup-learning-cloud` folder.
 
-## Step 3 - Build the course image
-
-**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
-
-This bakes the two notebooks and their helper scripts into a container image (the base model layers
-are pulled automatically and cached, so later rebuilds take under a minute):
-
-```bash
-make -C dockerfiles finetuning GPU_TARGET=gfx1151
-```
-
-The result is a local image named `ghcr.io/amdresearch/auplc-finetuning:latest`. When you change a
-notebook or script later, run this same command again to rebuild in place - do not create a second
-image.
-
-## Step 4 - Deploy the JupyterHub server
-
-**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
-
-```bash
-sudo ./auplc-installer install --gpu=strix-halo
-```
-
-This installs a small single-node Kubernetes (k3s) and the JupyterHub server on top of it, using the
-image you just built. Wait until it finishes and reports the pods are ready. When it is done it
-prints the **web address of the server** - it looks like `http://<this-machine's-address>:30890/`.
-**Write that address down; it is what you give attendees in Step 7.**
-
-The course "Fine-tuning on GPUs" is already registered, so it shows up on the login page
-automatically. Each attendee who logs in gets their own private notebook server with its own GPU
-slice and a writable home folder.
-
-> **Already have another JupyterHub running on this same box?** Two servers cannot share the same
-> name. On a fresh box this never happens. If it does (a shared dev box), the simplest fix is to
-> deploy on a machine that does not already run one - that keeps this command exactly as written,
-> with nothing to configure.
-
-## Step 5 - Put the workshop files on the machine
+## Step 3 - Put the workshop files on the machine
 
 **Run this on: any machine that can reach both your file store and the Strix Halo box.**
 
-The large inputs ship as one folder called `mm2_workshop_assets` (about **47 GB**), split into ~4 GB
-pieces so it copies easily. It is hosted on your team's shared drive (for this workshop, OneDrive).
-Its layout is:
+The large inputs ship as one folder called `mm2_workshop_assets` (about **16 GB** with the default
+LIBERO subset), split into ~4 GB pieces so it copies easily. It is hosted on your team's shared
+drive (for this workshop, OneDrive). Its layout is:
 
 ```
 mm2_workshop_assets/
-  base/           the base MolmoAct2-DROID checkpoint, stored in BF16   (~11 GB)
-  libero/         the LIBERO training dataset                            (~33 GB)
+  base/           the base MolmoAct2-DROID checkpoint, stored in BF16          (~11 GB)
+  libero/         the LIBERO training dataset (default: ~1 GB task-diverse subset;
+                  set USE_FULL_LIBERO=1 in the notebook to fetch the full ~33 GB set)
   tokenizer/      a small tokenizer the model needs
-  droid_dataset/  a small real-robot dataset used by notebook 1, Step 3  (~1.4 GB)
-  ft_checkpoint/  the fine-tune "delta": the LoRA adapter + trained parts (~2.4 GB)
+  droid_dataset/  a small real-robot dataset used by notebook 1, Step 3         (~1.4 GB)
+  ft_checkpoint/  the fine-tune "delta": the LoRA adapter + trained parts       (~2.4 GB)
   reconstruct_reference.py  unpack_bundle.sh  README.txt
 ```
 
@@ -105,15 +70,16 @@ scp -r /path/to/mm2_workshop_assets  <user>@<strix-halo-address>:/opt/auplc-asse
 > frozen base model plus a small set of weights that changed during fine-tuning. Instead of shipping
 > the whole base model twice, we ship the base once (in BF16, the precision everyone runs in) and
 > only the small delta. The full fine-tuned checkpoint is rebuilt automatically from base + delta in
-> Step 6 - you do not do anything extra.
+> Step 4 - you do not do anything extra.
 
-## Step 6 - Pre-stage the files once (before the workshop)
+## Step 4 - Pre-stage the files once (before the build)
 
-**Run this on: the Strix Halo box, once, before attendees arrive.**
+**Run this on: the Strix Halo box, once.**
 
-Unpack the bundle one time into a shared, read-only folder and rebuild the full fine-tuned
-checkpoint once. Every attendee's server then **links** to this single copy instantly - nothing is
-downloaded or copied per person, and attendees never touch it.
+Unpack the bundle one time into a single tree and rebuild the full fine-tuned checkpoint once. This
+produces the `assets/` folder that the next step bakes into the image. It needs the training Python
+(torch/safetensors), so run it inside the current course image (build a code-only image first with
+`ASSETS_SRC= make -C dockerfiles finetuning GPU_TARGET=gfx1151` if you do not have one yet):
 
 ```bash
 sudo mkdir -p /opt/auplc-assets/assets
@@ -124,20 +90,68 @@ docker run --rm --user 0:0 -v /opt/auplc-assets:/opt/auplc-assets \
 ```
 
 This writes `/opt/auplc-assets/assets` - the base model and datasets under `hf_hub/`, and the
-rebuilt fine-tuned policy under `checkpoints/reference/pretrained_model/` - and makes it
-world-readable. It takes a couple of minutes and prints `Shared assets ready` when done.
+rebuilt fine-tuned policy under `checkpoints/reference/pretrained_model/`. It prints
+`Shared assets ready` when done.
 
-That is all you do. The standard install already mounts `/opt/auplc-assets` **read-only** into every
-attendee's server, and the moment a server starts it links these files into that attendee's
-workspace automatically - no command, no `sudo`, no downloading. Attendees just open the notebooks
-and run.
+## Step 5 - Build the course image (with the assets baked in)
 
-> **Ran the installer before staging?** That is fine - the mount is part of the standard install, so
-> any server started after Step 6 picks the files up automatically. If a server was already running,
-> that attendee should restart it (**File → Hub Control Panel → Stop My Server**, then **Start**) so
-> the one-time link step runs.
+**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
 
-## Step 7 - Give attendees the address
+This bakes the two notebooks, their helper scripts, AND the pre-staged assets into one
+self-contained container image. `ASSETS_SRC` defaults to `/opt/auplc-assets/assets`, so if you did
+Step 4 there is nothing extra to pass:
+
+```bash
+make -C dockerfiles finetuning GPU_TARGET=gfx1151
+```
+
+The result is a local image `ghcr.io/amdresearch/auplc-finetuning:latest` (and `:latest-gfx1151`)
+that carries its own HF cache under `/opt/auplc-hf` and reference checkpoint under `/opt/auplc-ref` -
+no shared mount, no per-attendee download. When you change a notebook or script later, run the same
+command to rebuild in place - do not create a second image.
+
+> **Build a code-only image** (no assets, e.g. for CI) with `ASSETS_SRC= make -C dockerfiles
+> finetuning GPU_TARGET=gfx1151`. The assets are passed to the build as a BuildKit named context, so
+> they are never copied into the git tree.
+
+## Step 6 - Distribute the image to the other nodes (multi-node only)
+
+**Run this on: the Strix Halo box.** Skip this on a single machine.
+
+Because the assets are inside the image, distributing the workshop to a cluster is just distributing
+the image - like a `docker pull`. Save it once and load it on each node (or push to a registry every
+node can reach):
+
+```bash
+docker save ghcr.io/amdresearch/auplc-finetuning:latest-gfx1151 | gzip > auplc-finetuning.tar.gz
+# then on each node:
+gunzip -c auplc-finetuning.tar.gz | docker load
+```
+
+## Step 7 - Deploy the JupyterHub server
+
+**Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
+
+```bash
+sudo ./auplc-installer install --gpu=strix-halo
+```
+
+This installs a small single-node Kubernetes (k3s) and the JupyterHub server on top of it, using the
+image you just built. Wait until it finishes and reports the pods are ready. When it is done it
+prints the **web address of the server** - it looks like `http://<this-machine's-address>:30890/`.
+**Write that address down; it is what you give attendees in Step 8.**
+
+The course "Fine-tuning on GPUs" is already registered, so it shows up on the login page
+automatically. Each attendee who logs in gets their own private notebook server with its own GPU
+slice and a writable home folder. The assets are already in the image, so attendees just open the
+notebooks and click **Run All** - nothing is downloaded or linked at the venue.
+
+> **Already have another JupyterHub running on this same box?** Two servers cannot share the same
+> name. On a fresh box this never happens. If it does (a shared dev box), the simplest fix is to
+> deploy on a machine that does not already run one - that keeps this command exactly as written,
+> with nothing to configure.
+
+## Step 8 - Give attendees the address
 
 Send each attendee:
 
@@ -152,19 +166,17 @@ They then follow **[README.md](README.md)**. Done.
 
 **Run this on: a Strix Halo box, after Steps 1-6 above.**
 
-To verify a change end to end without any network, run a notebook headless against the same shared
-files the attendees use. This links them into a scratch cache exactly the way an attendee's server
-does (zero-copy), then executes the notebook fully offline on the GPU:
+To verify a change end to end without any network, run a notebook headless directly against the
+baked image - no mount and no staging step, exactly what an attendee gets. The assets are already in
+the image at `/opt/auplc-hf` (HF cache) and `/opt/auplc-ref` (reference checkpoint):
 
 ```bash
 docker run --rm --network=host --ipc=host --shm-size 16G \
   --device=/dev/kfd --device=/dev/dri --security-opt seccomp=unconfined \
   --group-add video --group-add render \
-  -v /opt/auplc-assets:/opt/auplc-assets:ro \
   --tmpfs /home/jovyan:mode=0777 \
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest -lc '
-    scripts/fetch_assets.sh                     # links the shared assets into this run (zero-copy)
+  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest-gfx1151 -lc '
     mkdir -p /home/jovyan/outputs
     /opt/train-venv/bin/python -m ipykernel install --user --name tv >/dev/null 2>&1
     jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=tv \
@@ -174,3 +186,7 @@ docker run --rm --network=host --ipc=host --shm-size 16G \
 
 A healthy run shows the closed-loop LIBERO evaluation reporting success. Model weights and large
 videos stay on the machine (never re-hosted).
+
+> **Testing against an external asset tree instead of the baked cache?** The code-only image plus
+> `scripts/fetch_assets.sh` still supports the old mount-and-link workflow; point `ASSETS_SRC` at a
+> mounted `assets/` tree and run `fetch_assets.sh` before nbconvert.

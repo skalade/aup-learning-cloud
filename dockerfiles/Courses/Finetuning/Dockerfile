@@ -2,7 +2,17 @@
 # SPDX-License-Identifier: MIT
 
 ARG BASE_IMAGE=ghcr.io/amdresearch/auplc-base:latest
-FROM ${BASE_IMAGE}
+# Selects the final stage: "without-assets" (default, code-only image for CI/registry) or
+# "with-assets" (workshop image with the dataset/model baked in). build.sh sets this to
+# with-assets and overrides the "assets" context below when ASSETS_SRC is provided.
+ARG FINAL=without-assets
+
+# Optional pre-staged assets context. Empty by default; overridden at build time with
+# `--build-context assets=<prestaged assets dir>`. Only read by the with-assets stage, so the
+# default (no assets) build never touches it.
+FROM scratch AS assets
+
+FROM ${BASE_IMAGE} AS base
 
 USER root
 SHELL ["/bin/bash", "-c"]
@@ -116,3 +126,32 @@ ENV HOME=/home/jovyan \
 
 USER jovyan
 WORKDIR /ryzers/notebooks
+
+# ---------------------------------------------------------------------------------------------
+# Distribution variants. The default final stage is the code-only image (no assets), which keeps
+# CI/registry builds and non-workshop use working unchanged. When build.sh passes
+# `--build-arg FINAL=with-assets` together with `--build-context assets=<prestaged tree>`, the
+# workshop assets are baked in and the HF cache is pointed at that baked, in-image location so no
+# shared host mount is needed. The cache lives under /opt (NOT /home/jovyan) because a persistent
+# volume mounts over /home/jovyan at runtime and would hide anything baked under HOME.
+# ---------------------------------------------------------------------------------------------
+FROM base AS without-assets
+
+FROM base AS with-assets
+USER root
+COPY --from=assets hf_hub/ /opt/auplc-hf/hub/
+COPY --from=assets checkpoints/reference/pretrained_model/ /opt/auplc-ref/pretrained_model/
+# LeRobot resolves datasets under $HF_LEROBOT_HOME/{repo_id}, not the HF hub cache; link the
+# hub-cached LIBERO dataset snapshot there so offline Step-4 training reuses the same blobs.
+RUN set -euo pipefail; \
+    snap="$(ls -d /opt/auplc-hf/hub/datasets--allenai--MolmoAct2-LIBERO-Dataset/snapshots/*/ | head -1)"; \
+    mkdir -p /opt/auplc-hf/lerobot/allenai; \
+    ln -sfn "${snap%/}" /opt/auplc-hf/lerobot/allenai/MolmoAct2-LIBERO-Dataset; \
+    chown -R jovyan:100 /opt/auplc-hf /opt/auplc-ref
+ENV HF_HOME=/opt/auplc-hf \
+    HF_LEROBOT_HOME=/opt/auplc-hf/lerobot \
+    REFERENCE_POLICY=/opt/auplc-ref/pretrained_model
+USER jovyan
+WORKDIR /ryzers/notebooks
+
+FROM ${FINAL} AS final

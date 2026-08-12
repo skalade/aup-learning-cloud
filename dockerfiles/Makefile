@@ -27,6 +27,12 @@ ROCM_SDK_TARGET ?= $(GPU_TARGET)
 GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest
 CODE_GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest-$(GPU_TARGET)
 
+# Finetuning course: pre-staged assets tree to BAKE into the image (output of
+# prestage_shared.sh). When this directory exists, `make finetuning` builds a self-contained
+# image with the base model + LIBERO subset + tokenizer + reference checkpoint baked in, so it
+# distributes to every node with no shared mount. Set ASSETS_SRC= (empty) to build code-only.
+ASSETS_SRC ?= /opt/auplc-assets/assets
+
 # Build args for docker build (constructed from mirror settings)
 BUILD_ARGS :=
 ifneq ($(MIRROR_PREFIX),)
@@ -161,7 +167,7 @@ finetuning:
 		echo "Building ROSCon Finetuning Course Image..."; \
 		echo "-------------------------------------------";
 
-	cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) bash ./build.sh
+	cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) ASSETS_SRC="$(ASSETS_SRC)" bash ./build.sh
 	docker tag ghcr.io/amdresearch/auplc-finetuning:latest ghcr.io/amdresearch/auplc-finetuning:latest-$(GPU_TARGET)
 	$(MAKE) save-image IMAGE=ghcr.io/amdresearch/auplc-finetuning:latest
 
