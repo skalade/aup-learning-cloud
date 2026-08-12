@@ -27,14 +27,14 @@ ROCM_SDK_TARGET ?= $(GPU_TARGET)
 GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest
 CODE_GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest-$(GPU_TARGET)
 
-# Finetuning course assets. The split OneDrive bundle lives at $(ASSETS_BUNDLE); prestage_shared.sh
-# (run INSIDE the course image, which has torch/safetensors) unpacks it and reconstructs the full
-# reference checkpoint into $(ASSETS_SRC). When $(ASSETS_SRC) exists, `make finetuning` bakes it into
-# the image so the result is self-contained and needs no shared mount. Set ASSETS_SRC= to build
-# code-only. Use `make finetuning-baked` to do the prestage + bake in a single command.
+# Finetuning course assets. ASSETS_SRC points at the RAW split-tar workshop bundle (base/ libero/
+# tokenizer/ droid_dataset/ ft_checkpoint/). `make finetuning ASSETS_SRC=<bundle>` is FULLY
+# self-contained: the Docker build itself unpacks the bundle and reconstructs the reference
+# checkpoint (no host pre-stage), then bakes everything in so the image needs no shared mount.
+# Set ASSETS_SRC= (empty) to build a code-only image for CI/registry.
 ASSETS_ROOT      ?= /opt/auplc-assets
 ASSETS_BUNDLE    ?= $(ASSETS_ROOT)/mm2_workshop_assets
-ASSETS_SRC       ?= $(ASSETS_ROOT)/assets
+ASSETS_SRC       ?= $(ASSETS_BUNDLE)
 FINETUNING_IMAGE ?= ghcr.io/amdresearch/auplc-finetuning:latest
 
 # Build args for docker build (constructed from mirror settings)
@@ -168,33 +168,21 @@ physim:
 
 finetuning:
 	@echo "-------------------------------------------"; \
-		echo "Building ROSCon Finetuning Course Image..."; \
+		echo "Building ROSCon Finetuning Course Image (self-contained)..."; \
+		echo "  pass the RAW workshop bundle via ASSETS_SRC, e.g.:"; \
+		echo "  make -C dockerfiles finetuning GPU_TARGET=$(GPU_TARGET) ASSETS_SRC=/path/to/mm2_workshop_assets"; \
+		echo "  (current ASSETS_SRC=$(ASSETS_SRC))"; \
 		echo "-------------------------------------------";
 
 	cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) ASSETS_SRC="$(ASSETS_SRC)" bash ./build.sh
 	docker tag ghcr.io/amdresearch/auplc-finetuning:latest ghcr.io/amdresearch/auplc-finetuning:latest-$(GPU_TARGET)
 	$(MAKE) save-image IMAGE=ghcr.io/amdresearch/auplc-finetuning:latest
 
-# One command to produce the self-contained image: pre-stage the workshop bundle into
-# $(ASSETS_SRC), then build with those assets baked in. prestage_shared.sh needs the course
-# Python (torch/safetensors), so it runs INSIDE the course image; if none exists yet we build a
-# code-only image first to bootstrap. Usage: make -C dockerfiles finetuning-baked GPU_TARGET=gfx1151
+# Back-compat alias. Pre-staging now happens INSIDE the Docker build, so this is equivalent to
+# `make finetuning ASSETS_SRC=<bundle>`. Kept so existing docs / muscle-memory keep working.
 .PHONY: finetuning-baked
 finetuning-baked:
-	@echo "-------------------------------------------"; \
-		echo "Prestage + bake: self-contained Finetuning image"; \
-		echo "  bundle = $(ASSETS_BUNDLE)"; \
-		echo "  assets = $(ASSETS_SRC)"; \
-		echo "-------------------------------------------";
-	@if ! docker image inspect $(FINETUNING_IMAGE) >/dev/null 2>&1; then \
-		echo ">> no prestage-capable image yet -> building code-only image first to bootstrap"; \
-		( cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) ASSETS_SRC= bash ./build.sh ); \
-	fi
-	@echo ">> pre-staging workshop assets (unpack bundle + reconstruct reference checkpoint)"
-	docker run --rm --user 0:0 -v $(ASSETS_ROOT):$(ASSETS_ROOT) \
-		--entrypoint bash $(FINETUNING_IMAGE) \
-		/ryzers/notebooks/scripts/prestage_shared.sh "$(ASSETS_BUNDLE)" "$(ASSETS_SRC)"
-	@echo ">> building self-contained image with assets baked in"
+	@echo ">> 'finetuning-baked' now just runs 'finetuning' (bundle is pre-staged inside the build)."
 	$(MAKE) finetuning ASSETS_SRC="$(ASSETS_SRC)"
 
 local-inference:

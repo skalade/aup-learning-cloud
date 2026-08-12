@@ -76,37 +76,27 @@ scp -r /path/to/mm2_workshop_assets  <user>@<strix-halo-address>:/opt/auplc-asse
 
 **Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
 
-One command pre-stages the workshop bundle (unpacks it and rebuilds the full fine-tuned checkpoint
-once) and bakes it - together with the two notebooks and their helper scripts - into a single
-self-contained container image:
+One command builds a FULLY self-contained image: the Docker build itself unpacks the raw workshop
+bundle, rebuilds the full fine-tuned checkpoint, and bakes everything - together with the two
+notebooks and their helper scripts - into a single container image. Point `ASSETS_SRC` at the raw
+bundle from Step 3:
 
 ```bash
-make -C dockerfiles finetuning-baked GPU_TARGET=gfx1151
+make -C dockerfiles finetuning GPU_TARGET=gfx1151 ASSETS_SRC=/path/to/mm2_workshop_assets
 ```
 
-It reads the bundle from `ASSETS_BUNDLE` (default `/opt/auplc-assets/mm2_workshop_assets`, from
-Step 3) and writes the pre-staged tree to `ASSETS_SRC` (default `/opt/auplc-assets/assets`) before
-baking. The pre-stage runs inside the course image because it needs the course Python
-(torch/safetensors); if no image exists yet the target builds a code-only one first, so this works
-on a fresh machine.
+There is no separate pre-stage step - the build's staging stage runs the unpack + checkpoint
+reconstruction internally (using the image's own Python), so this works on a fresh machine. Only
+the bundle subdirs it needs are read (`base/ libero/ tokenizer/ droid_dataset/ ft_checkpoint/`); an
+optional `libero_full_backup/` is ignored.
 
 The result is a local image `ghcr.io/amdresearch/auplc-finetuning:latest` (and `:latest-gfx1151`)
 that carries its own HF cache under `/opt/auplc-hf` and reference checkpoint under `/opt/auplc-ref` -
 no shared mount, no per-attendee download. When you only change a notebook or script later, rebuild
-in place with `make -C dockerfiles finetuning GPU_TARGET=gfx1151` (the assets are already staged, so
-no re-prestage is needed) - do not create a second image.
+in place with the same command (BuildKit reuses the cached asset layers, so it does not re-unpack) -
+do not create a second image.
 
-> **Prefer to run the two steps separately?** Pre-stage once, then build. `make finetuning` alone
-> bakes whatever is already at `ASSETS_SRC`, so the pre-stage is only needed the first time or when
-> the bundle changes:
->
-> ```bash
-> docker run --rm --user 0:0 -v /opt/auplc-assets:/opt/auplc-assets \
->   --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest \
->   /ryzers/notebooks/scripts/prestage_shared.sh \
->     /opt/auplc-assets/mm2_workshop_assets /opt/auplc-assets/assets
-> make -C dockerfiles finetuning GPU_TARGET=gfx1151
-> ```
+> `make finetuning-baked` is kept as a back-compat alias and now simply runs `make finetuning`.
 
 > **Build a code-only image** (no assets, e.g. for CI) with `ASSETS_SRC= make -C dockerfiles
 > finetuning GPU_TARGET=gfx1151`. The assets are passed to the build as a BuildKit named context, so

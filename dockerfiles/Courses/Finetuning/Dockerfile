@@ -130,24 +130,41 @@ WORKDIR /ryzers/notebooks
 # ---------------------------------------------------------------------------------------------
 # Distribution variants. The default final stage is the code-only image (no assets), which keeps
 # CI/registry builds and non-workshop use working unchanged. When build.sh passes
-# `--build-arg FINAL=with-assets` together with `--build-context assets=<prestaged tree>`, the
-# workshop assets are baked in and the HF cache is pointed at that baked, in-image location so no
-# shared host mount is needed. The cache lives under /opt (NOT /home/jovyan) because a persistent
-# volume mounts over /home/jovyan at runtime and would hide anything baked under HOME.
+# `--build-arg FINAL=with-assets` together with `--build-context assets=<RAW workshop bundle>`,
+# the build is FULLY SELF-CONTAINED: a staging stage unpacks the bundle and reconstructs the
+# fine-tuned checkpoint in-build, and the final stage bakes the result in with the HF cache
+# pointed at it (no host pre-stage, no shared mount). The cache lives under /opt (NOT /home/jovyan)
+# because a persistent volume mounts over /home/jovyan at runtime and would hide anything under HOME.
 # ---------------------------------------------------------------------------------------------
 FROM base AS without-assets
 
+# Self-contained pre-stage: unpack the raw split-tar workshop bundle and rebuild the fine-tuned
+# checkpoint entirely INSIDE the build, using the image's own train-venv. Only the bundle subdirs
+# we need are copied (the optional ~33 GB libero_full_backup/ is skipped; with BuildKit its bytes
+# are never transferred). This stage is discarded except for the staged /opt trees copied below.
+# The reused scripts/fetch_assets.sh untars base/libero/tokenizer/droid into the HF cache and
+# reconstructs the reference checkpoint from the BF16 base + delta.
+FROM base AS assets-staging
+USER root
+COPY --from=assets base/          /staging/bundle/base/
+COPY --from=assets libero/        /staging/bundle/libero/
+COPY --from=assets tokenizer/     /staging/bundle/tokenizer/
+COPY --from=assets droid_dataset/ /staging/bundle/droid_dataset/
+COPY --from=assets ft_checkpoint/ /staging/bundle/ft_checkpoint/
+RUN set -euo pipefail; \
+    HF_HOME=/opt/auplc-hf \
+    HF_LEROBOT_HOME=/opt/auplc-hf/lerobot \
+    REFERENCE_POLICY=/opt/auplc-ref/pretrained_model \
+    ASSETS_SRC=/staging/bundle \
+    bash /ryzers/notebooks/scripts/fetch_assets.sh; \
+    test -f /opt/auplc-ref/pretrained_model/model.safetensors; \
+    rm -rf /staging
+
 FROM base AS with-assets
 USER root
-COPY --from=assets hf_hub/ /opt/auplc-hf/hub/
-COPY --from=assets checkpoints/reference/pretrained_model/ /opt/auplc-ref/pretrained_model/
-# LeRobot resolves datasets under $HF_LEROBOT_HOME/{repo_id}, not the HF hub cache; link the
-# hub-cached LIBERO dataset snapshot there so offline Step-4 training reuses the same blobs.
-RUN set -euo pipefail; \
-    snap="$(ls -d /opt/auplc-hf/hub/datasets--allenai--MolmoAct2-LIBERO-Dataset/snapshots/*/ | head -1)"; \
-    mkdir -p /opt/auplc-hf/lerobot/allenai; \
-    ln -sfn "${snap%/}" /opt/auplc-hf/lerobot/allenai/MolmoAct2-LIBERO-Dataset; \
-    chown -R jovyan:100 /opt/auplc-hf /opt/auplc-ref
+COPY --from=assets-staging /opt/auplc-hf  /opt/auplc-hf
+COPY --from=assets-staging /opt/auplc-ref /opt/auplc-ref
+RUN chown -R jovyan:100 /opt/auplc-hf /opt/auplc-ref
 ENV HF_HOME=/opt/auplc-hf \
     HF_LEROBOT_HOME=/opt/auplc-hf/lerobot \
     REFERENCE_POLICY=/opt/auplc-ref/pretrained_model

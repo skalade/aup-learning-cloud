@@ -7,10 +7,11 @@ set -euo pipefail
 cp -r ../../../projects/Finetuning ./course_data
 trap 'rm -rf course_data' EXIT
 
-# Optionally BAKE the pre-staged workshop assets into the image so it is fully self-contained
-# and can be distributed to every node without a shared mount. Set ASSETS_SRC to the prestaged
-# tree (the output of prestage_shared.sh: hf_hub/ + checkpoints/reference/pretrained_model/).
-# The assets are passed as a BuildKit named context so they never enter the git build context.
+# Optionally BAKE the workshop assets into the image so it is fully self-contained and can be
+# distributed to every node without a shared mount. Set ASSETS_SRC to the RAW split-tar bundle
+# (base/ libero/ tokenizer/ droid_dataset/ ft_checkpoint/); the Docker build unpacks it and
+# reconstructs the reference checkpoint internally. Passed as a BuildKit named context so the
+# assets never enter the git build context.
 BUILD_EXTRA=()
 if [ -n "${ASSETS_SRC:-}" ] && [ -d "${ASSETS_SRC}" ]; then
   echo "baking workshop assets into the image from: ${ASSETS_SRC}"
