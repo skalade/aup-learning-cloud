@@ -72,54 +72,47 @@ scp -r /path/to/mm2_workshop_assets  <user>@<strix-halo-address>:/opt/auplc-asse
 > only the small delta. The full fine-tuned checkpoint is rebuilt automatically from base + delta in
 > Step 4 - you do not do anything extra.
 
-## Step 4 - Pre-stage the files once (before the build)
-
-**Run this on: the Strix Halo box, once.**
-
-Unpack the bundle one time into a single tree and rebuild the full fine-tuned checkpoint once. This
-produces the `assets/` folder that the next step bakes into the image. It needs the training Python
-(torch/safetensors), so run it inside the current course image (build a code-only image first with
-`ASSETS_SRC= make -C dockerfiles finetuning GPU_TARGET=gfx1151` if you do not have one yet):
-
-```bash
-sudo mkdir -p /opt/auplc-assets/assets
-docker run --rm --user 0:0 -v /opt/auplc-assets:/opt/auplc-assets \
-  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest \
-  /ryzers/notebooks/scripts/prestage_shared.sh \
-    /opt/auplc-assets/mm2_workshop_assets /opt/auplc-assets/assets
-```
-
-This writes `/opt/auplc-assets/assets` - the base model and datasets under `hf_hub/`, and the
-rebuilt fine-tuned policy under `checkpoints/reference/pretrained_model/`. It prints
-`Shared assets ready` when done.
-
-## Step 5 - Build the course image (with the assets baked in)
+## Step 4 - Build the self-contained course image
 
 **Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
 
-This bakes the two notebooks, their helper scripts, AND the pre-staged assets into one
-self-contained container image. `ASSETS_SRC` defaults to `/opt/auplc-assets/assets`, so if you did
-Step 4 there is nothing extra to pass:
+One command pre-stages the workshop bundle (unpacks it and rebuilds the full fine-tuned checkpoint
+once) and bakes it - together with the two notebooks and their helper scripts - into a single
+self-contained container image:
 
 ```bash
-make -C dockerfiles finetuning GPU_TARGET=gfx1151
+make -C dockerfiles finetuning-baked GPU_TARGET=gfx1151
 ```
+
+It reads the bundle from `ASSETS_BUNDLE` (default `/opt/auplc-assets/mm2_workshop_assets`, from
+Step 3) and writes the pre-staged tree to `ASSETS_SRC` (default `/opt/auplc-assets/assets`) before
+baking. The pre-stage runs inside the course image because it needs the course Python
+(torch/safetensors); if no image exists yet the target builds a code-only one first, so this works
+on a fresh machine.
 
 The result is a local image `ghcr.io/amdresearch/auplc-finetuning:latest` (and `:latest-gfx1151`)
 that carries its own HF cache under `/opt/auplc-hf` and reference checkpoint under `/opt/auplc-ref` -
-no shared mount, no per-attendee download. When you change a notebook or script later, run the same
-command to rebuild in place - do not create a second image.
+no shared mount, no per-attendee download. When you only change a notebook or script later, rebuild
+in place with `make -C dockerfiles finetuning GPU_TARGET=gfx1151` (the assets are already staged, so
+no re-prestage is needed) - do not create a second image.
 
-> **Shortcut - one command for Steps 4 + 5.** `make -C dockerfiles finetuning-baked GPU_TARGET=gfx1151`
-> pre-stages the bundle and then bakes it into the image in a single step. If no course image exists
-> yet it builds a code-only one first (the pre-stage needs the course Python), so this works even on a
-> fresh machine. Override the paths with `ASSETS_BUNDLE=` / `ASSETS_SRC=` if your layout differs.
+> **Prefer to run the two steps separately?** Pre-stage once, then build. `make finetuning` alone
+> bakes whatever is already at `ASSETS_SRC`, so the pre-stage is only needed the first time or when
+> the bundle changes:
+>
+> ```bash
+> docker run --rm --user 0:0 -v /opt/auplc-assets:/opt/auplc-assets \
+>   --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest \
+>   /ryzers/notebooks/scripts/prestage_shared.sh \
+>     /opt/auplc-assets/mm2_workshop_assets /opt/auplc-assets/assets
+> make -C dockerfiles finetuning GPU_TARGET=gfx1151
+> ```
 
 > **Build a code-only image** (no assets, e.g. for CI) with `ASSETS_SRC= make -C dockerfiles
 > finetuning GPU_TARGET=gfx1151`. The assets are passed to the build as a BuildKit named context, so
 > they are never copied into the git tree.
 
-## Step 6 - Distribute the image to the other nodes (multi-node only)
+## Step 5 - Distribute the image to the other nodes (multi-node only)
 
 **Run this on: the Strix Halo box.** Skip this on a single machine.
 
@@ -133,7 +126,7 @@ docker save ghcr.io/amdresearch/auplc-finetuning:latest-gfx1151 | gzip > auplc-f
 gunzip -c auplc-finetuning.tar.gz | docker load
 ```
 
-## Step 7 - Deploy the JupyterHub server
+## Step 6 - Deploy the JupyterHub server
 
 **Run this on: the Strix Halo box, inside the `aup-learning-cloud` folder.**
 
@@ -144,7 +137,7 @@ sudo ./auplc-installer install --gpu=strix-halo
 This installs a small single-node Kubernetes (k3s) and the JupyterHub server on top of it, using the
 image you just built. Wait until it finishes and reports the pods are ready. When it is done it
 prints the **web address of the server** - it looks like `http://<this-machine's-address>:30890/`.
-**Write that address down; it is what you give attendees in Step 8.**
+**Write that address down; it is what you give attendees in Step 7.**
 
 The course "Fine-tuning on GPUs" is already registered, so it shows up on the login page
 automatically. Each attendee who logs in gets their own private notebook server with its own GPU
@@ -156,11 +149,11 @@ notebooks and click **Run All** - nothing is downloaded or linked at the venue.
 > deploy on a machine that does not already run one - that keeps this command exactly as written,
 > with nothing to configure.
 
-## Step 8 - Give attendees the address
+## Step 7 - Give attendees the address
 
 Send each attendee:
 
-- the web address from Step 4 (`http://<this-machine's-address>:30890/`), and
+- the web address from Step 6 (`http://<this-machine's-address>:30890/`), and
 - their username and password.
 
 They then follow **[README.md](README.md)**. Done.
@@ -169,7 +162,7 @@ They then follow **[README.md](README.md)**. Done.
 
 ## Developer check: reproduce the whole thing offline before you ship
 
-**Run this on: a Strix Halo box, after Steps 1-6 above.**
+**Run this on: a Strix Halo box, after Step 4 (the build) above.**
 
 To verify a change end to end without any network, run a notebook headless directly against the
 baked image - no mount and no staging step, exactly what an attendee gets. The assets are already in
