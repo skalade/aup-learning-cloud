@@ -51,6 +51,20 @@ COURSE_CATALOG: tuple[Course, ...] = (
     Course("Course-DL", "auplc-dl", True, "dl", "Deep Learning Course"),
     Course("Course-LLM", "auplc-llm", True, "llm", "Large Language Model Course"),
     Course("Course-PhySim", "auplc-physim", True, "physim", "Physical Simulation Course"),
+    Course(
+        "Course-Finetuning",
+        "auplc-finetuning",
+        True,
+        "finetuning",
+        "Fine-tuning on GPUs: from cloud to robot",
+    ),
+    Course(
+        "Course-LocalInference",
+        "auplc-localinference",
+        True,
+        "local-inference",
+        "Local inference of embodied AI",
+    ),
 )
 
 COURSE_KEYS_ALL: tuple[str, ...] = tuple(c.key for c in COURSE_CATALOG)
@@ -81,7 +95,15 @@ HUB_IMAGE_NAME = "auplc-hub"
 
 BASE_TEAM_MAPPING: dict[str, list[str]] = {
     "cpu": ["cpu", "code-cpu"],
-    "gpu": ["code-gpu", "Course-CV", "Course-DL", "Course-LLM", "Course-PhySim"],
+    "gpu": [
+        "code-gpu",
+        "Course-CV",
+        "Course-DL",
+        "Course-LLM",
+        "Course-PhySim",
+        "Course-Finetuning",
+        "Course-LocalInference",
+    ],
     "official": [
         "cpu",
         "gpu",
@@ -91,8 +113,17 @@ BASE_TEAM_MAPPING: dict[str, list[str]] = {
         "Course-DL",
         "Course-LLM",
         "Course-PhySim",
+        "Course-Finetuning",
+        "Course-LocalInference",
     ],
-    "AUP": ["Course-CV", "Course-DL", "Course-LLM", "Course-PhySim"],
+    "AUP": [
+        "Course-CV",
+        "Course-DL",
+        "Course-LLM",
+        "Course-PhySim",
+        "Course-Finetuning",
+        "Course-LocalInference",
+    ],
     "native-users": [
         "code-cpu",
         "code-gpu",
@@ -100,6 +131,8 @@ BASE_TEAM_MAPPING: dict[str, list[str]] = {
         "Course-DL",
         "Course-LLM",
         "Course-PhySim",
+        "Course-Finetuning",
+        "Course-LocalInference",
         "cpu",
         "gpu",
     ],
@@ -112,6 +145,8 @@ BASE_TEAM_MAPPING: dict[str, list[str]] = {
         "Course-DL",
         "Course-LLM",
         "Course-PhySim",
+        "Course-Finetuning",
+        "Course-LocalInference",
     ],
 }
 
