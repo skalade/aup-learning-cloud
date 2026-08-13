@@ -36,7 +36,7 @@ If that prints a success message, the machine is ready.
 ```bash
 git clone <your-fork-url>/aup-learning-cloud.git
 cd aup-learning-cloud
-git checkout finetuning-interactive-sim
+git checkout roscon26
 ```
 
 Everything in the rest of this guide is run from inside this `aup-learning-cloud` folder.
