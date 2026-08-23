@@ -69,20 +69,25 @@ PLAYBACK_FPS = 10
 
 TRIAL_DIR = re.compile(r"trial_(\d+)_sandboxrc_(\d+)_reward_([\d.]+)_taskcompleted_(\d)")
 
-# Robosuite tasks that all ground with SAM3 and declare a subset of the
+# Robosuite tasks that all ground with OWLv2 + SAM2 and declare a subset of the
 # perception servers the notebook already started, so benchmark_scenarios can
 # run each one without starting anything new. Keyed by a short label used in the
-# table and captions. Picking a config for a new task means checking its
-# api_servers block first: several ship variants that want SAM2 or OWL-ViT,
-# which this image does not carry, or set use_img_differencing, which expects a
-# hosted vision model on a port nothing here listens on.
+# table and captions.
+#
+# The _sam2 configs are written at image build time by make_sam2_configs.py from
+# the upstream ones next to them, differing only in which servers they start.
+# Upstream grounds with SAM3, whose weights are gated on HuggingFace; this image
+# uses the ungated pair instead, so none of it needs a token. Picking a config
+# for a new task means generating its variant there, and checking that it does
+# not set use_img_differencing, which expects a hosted vision model on a port
+# nothing here listens on.
 SCENARIOS = {
-    "cube stack": "env_configs/cube_stack/franka_robosuite_cube_stack.yaml",
-    "cube restack": "env_configs/cube_restack/franka_robosuite_cube_restack.yaml",
-    "cube lift": "env_configs/cube_lifting/franka_robosuite_cube_lifting.yaml",
-    "nut assembly": "env_configs/nut_assembly/franka_robosuite_nut_assembly.yaml",
-    "spill wipe": "env_configs/spill_wipe/franka_robosuite_spill_wipe.yaml",
-    "two arm handover": "env_configs/two_arm_handover/two_arm_handover.yaml",
+    "cube stack": "env_configs/cube_stack/franka_robosuite_cube_stack_sam2.yaml",
+    "cube restack": "env_configs/cube_restack/franka_robosuite_cube_restack_sam2.yaml",
+    "cube lift": "env_configs/cube_lifting/franka_robosuite_cube_lifting_sam2.yaml",
+    "nut assembly": "env_configs/nut_assembly/franka_robosuite_nut_assembly_reduced_api_sam2.yaml",
+    "spill wipe": "env_configs/spill_wipe/franka_robosuite_spill_wipe_sam2.yaml",
+    "two arm handover": "env_configs/two_arm_handover/two_arm_handover_sam2.yaml",
 }
 
 
@@ -486,7 +491,7 @@ def benchmark_scenarios(
 
     Where benchmark() reruns one task over reseeded layouts, this runs a
     different task per entry, which is a broader read on the model since each
-    task needs a different program. Every task grounds with SAM3 and reuses the
+    task needs a different program. Every task grounds with OWLv2 + SAM2 and reuses the
     servers already started; each runs in its own output dir so the single
     trials cannot collide. A task that fails to run is recorded and the rest
     continue.

@@ -15,12 +15,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
 
-# ROS 2 Jazzy and development tools.
+# ROS 2 Jazzy runtime. Repository and build helpers are installed only in the
+# layers that use them, then purged before those layers are committed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       gnupg2 \
       locales \
-      python3-venv \
       software-properties-common \
     && locale-gen en_US en_US.UTF-8 \
     && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
@@ -34,11 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-desktop \
-      ros-dev-tools \
       ros-${ROS_DISTRO}-cv-bridge \
       ros-${ROS_DISTRO}-image-transport \
-      ros-${ROS_DISTRO}-v4l2-camera \
       ros-${ROS_DISTRO}-web-video-server \
+    && apt-get purge -y --auto-remove \
+      gnupg2 \
+      software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
 # Vulkan and O3DE.
@@ -52,6 +53,10 @@ RUN curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
       -o /tmp/o3de.deb \
     && apt-get install -y /tmp/o3de.deb \
     && rm /tmp/o3de.deb \
+    && apt-get purge -y \
+      lunarg-vkconfig \
+      vulkan-sdk \
+      vulkan-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # RAI framework and ROS dependencies.
@@ -70,7 +75,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-rai-interfaces \
       ros-${ROS_DISTRO}-sdformat-urdf \
       unzip \
-      vulkan-tools \
       weston \
       xwayland \
     && rm -rf /var/lib/apt/lists/*
@@ -80,26 +84,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages \
       jupyter-server-proxy
 
-ENV CARGO_HOME=/opt/cargo \
-    RUSTUP_HOME=/opt/rustup \
-    PATH="/opt/cargo/bin:/opt/rai-venv/bin:${PATH}"
+ENV PATH="/opt/rai-venv/bin:${PATH}"
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --no-modify-path \
-    && echo "/opt/ros/${ROS_DISTRO}/opt/sdformat_vendor/lib" \
+RUN echo "/opt/ros/${ROS_DISTRO}/opt/sdformat_vendor/lib" \
       > /etc/ld.so.conf.d/ros-sdformat.conf \
     && ldconfig
 
-RUN mkdir -p /ryzers \
+# The RAI build toolchain, venv bootstrap support and ROS repository tools do
+# not participate at runtime. Keeping the complete build in one layer lets the
+# purge and Git cleanup reclaim their bytes instead of leaving whiteouts over
+# earlier layers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      python3-venv \
+      ros-dev-tools \
+    && mkdir -p /ryzers \
     && git clone https://github.com/RobotecAI/rai.git /ryzers/rai \
     && git -C /ryzers/rai checkout "${RAI_COMMIT}" \
     && cd /ryzers/rai \
     && vcs import < ros_deps.repos \
-    && vcs import < demos.repos
-
-# Reuse the ROCm torch from auplc-base and prevent Python dependencies from
-# replacing it with CUDA wheels.
-RUN python3 -m venv --system-site-packages /opt/rai-venv \
+    && vcs import < demos.repos \
+    && rm -rf src/examples/rai-rosbot-xl-demo \
+    && python3 -m venv --system-site-packages /opt/rai-venv \
     && python3 -c "from importlib.metadata import version; \
 print('torch==' + version('torch')); \
 print('torchvision==' + version('torchvision')); \
@@ -111,11 +117,7 @@ print('torchaudio==' + version('torchaudio'))" > /opt/torch-constraints.txt \
       opencv-python \
       "setuptools<82" \
       "empy<4" \
-    && PIP_CONSTRAINT=/opt/torch-constraints.txt /opt/rai-venv/bin/pip install \
-      --no-cache-dir --no-build-isolation openai-whisper==20250625
-
-WORKDIR /ryzers/rai
-RUN sed -i \
+    && sed -i \
       's/    get_grabbing_point_tool: "GetGrabbingPointTool"/    get_grabbing_point_tool: Any/' \
       src/rai_core/rai/tools/ros2/manipulation/custom.py \
     && PIP_CONSTRAINT=/opt/torch-constraints.txt pip install --no-cache-dir \
@@ -149,16 +151,35 @@ RUN sed -i \
     && mkdir -p /opt/rai-cache \
     && download-perception-models \
     && python3 -c \
-      "import torch; assert torch.version.hip, 'RAI dependencies replaced ROCm torch'; print('RAI ROCm environment OK:', torch.__version__)"
+      "import torch; assert torch.version.hip, 'RAI dependencies replaced ROCm torch'; print('RAI ROCm environment OK:', torch.__version__)" \
+    && rm -rf \
+      .git \
+      src/rai_interfaces/.git \
+      src/examples/rai-manipulation-demo/.git \
+      /root/.ros \
+    && chown -R jovyan:100 /ryzers/rai /opt/rai-cache \
+    && apt-get purge -y --auto-remove \
+      python3-venv \
+      ros-dev-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ryzers/rai
 
 # Lemonade local OpenAI-compatible model server.
-RUN add-apt-repository ppa:lemonade-team/stable \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      gnupg2 \
+      software-properties-common \
+    && add-apt-repository ppa:lemonade-team/stable \
     && apt-get update \
     && apt-get install -y --no-install-recommends lemonade-server \
+    && apt-get purge -y --auto-remove \
+      gnupg2 \
+      software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-fetch the GGUFs the notebook uses so a workshop does not spend its first
-# minutes downloading them, the same idea as the SAM3 weights below.
+# minutes downloading them, the same idea as the perception weights below.
 #
 # `lemonade pull` in this build talks to a running Lemonade server rather than
 # downloading on its own, so the step starts lemond, waits for it, pulls, and
@@ -170,22 +191,22 @@ RUN add-apt-repository ppa:lemonade-team/stable \
 # ${LEMONADE_CACHE} again in the runtime ENV further down.
 #
 # Gemma is a built-in registry name and resolves to one file, so the name alone
-# is enough. gpt-oss cannot be pulled that way: the built-in entry for
-# gpt-oss-20b-mxfp4-GGUF pins no variant, and ggml-org/gpt-oss-20b-GGUF also
-# ships EAGLE3 draft models for speculative decoding, so the server downloads
-# the whole repo and then loads eagle3-gpt-oss-20b-BF16.gguf, first by name,
-# which llama-server dies on with a segfault. Naming the file registers the
-# right one and leaves the 2.6 GB of drafts undownloaded. A registered user.*
-# model shadows the built-in of the same name, so the notebook keeps asking for
-# plain "gpt-oss-20b-mxfp4-GGUF", and user_models.json is written into
-# LEMONADE_CACHE, where the runtime ENV further down points as well.
+# is enough. Ministral is not in Lemonade's registry at all, so it is registered
+# here as a user.* model, which is also how the notebook can keep asking for it
+# by a plain name; user_models.json is written into LEMONADE_CACHE, where the
+# runtime ENV further down points as well.
+#
+# The checkpoint names the exact .gguf rather than the repo or a quant tag.
+# mistralai/Ministral-3-14B-Instruct-2512-GGUF also ships a BF16 copy and a
+# vision mmproj, and an unpinned pull takes the whole repo and then picks a file
+# by name; this is the same trap that made the previous gpt-oss build download
+# EAGLE3 drafts and segfault llama-server on load.
 ARG LEMONADE_MODEL="Gemma-4-E2B-it-GGUF"
-ARG LEMONADE_BIG_MODEL="user.gpt-oss-20b-mxfp4-GGUF"
-ARG LEMONADE_BIG_CHECKPOINT="ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-MXFP4.gguf"
+ARG LEMONADE_BIG_MODEL="user.Ministral-3-14B-Instruct-2512-GGUF"
+ARG LEMONADE_BIG_FILE="Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
+ARG LEMONADE_BIG_CHECKPOINT="mistralai/Ministral-3-14B-Instruct-2512-GGUF:${LEMONADE_BIG_FILE}"
 ENV LEMONADE_CACHE=/opt/lemonade-cache
-RUN --mount=type=secret,id=hf_token,required=false \
-    set -eu; \
-    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+RUN set -eu; \
     export HF_HOME="${LEMONADE_CACHE}"; \
     export LEMONADE_CACHE_DIR="${LEMONADE_CACHE}"; \
     : "lemond refuses to start without a writable XDG_RUNTIME_DIR, and the" \
@@ -212,8 +233,12 @@ RUN --mount=type=secret,id=hf_token,required=false \
     kill "${LEMOND_PID}" 2>/dev/null || true; \
     rm -rf "${XDG_RUNTIME_DIR}"; \
     test -d "${LEMONADE_CACHE}/hub"; \
-    : "Fail here rather than at a workshop if the pull picks a draft model" ; \
-    test -n "$(find "${LEMONADE_CACHE}/hub" -name 'gpt-oss-20b-MXFP4.gguf' -print -quit)"
+    : "Fail here rather than at a workshop if the pull picks the wrong file" ; \
+    test -n "$(find "${LEMONADE_CACHE}/hub" -name "${LEMONADE_BIG_FILE}" -print -quit)"; \
+    : "The BF16 copy is 28 GB and nothing here should have pulled it" ; \
+    test -z "$(find "${LEMONADE_CACHE}/hub" -name '*-BF16.gguf' -print -quit)"; \
+    rm -f /tmp/lemond-build.log; \
+    chown -R jovyan:100 "${LEMONADE_CACHE}"
 
 # ---------------------------------------------------------------------------
 # CaP-X (Code-as-Policies eXtended) - the code-generating manipulation agent
@@ -245,9 +270,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgles2 \
       libglew-dev \
       libglfw3 \
-      libglfw3-dev \
       libosmesa6 \
-      libosmesa6-dev \
       pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -257,7 +280,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pip take the current MuJoCo release breaks startup.
 # FIX: CaP-X also pins PyOpenGL-accelerate==3.1.6, which has no cp312 wheel and
 # does not compile on Python 3.12 - left out here.
-RUN cp /opt/torch-constraints.txt /opt/capx-constraints.txt \
+#
+# The checkout, all editable installs and native builds share one layer so the
+# temporary venv/bootstrap packages, development headers and Git histories are
+# absent from the resulting image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      libglfw3-dev \
+      libosmesa6-dev \
+      python3-venv \
+    && cp /opt/torch-constraints.txt /opt/capx-constraints.txt \
     && printf '%s\n' \
       'numpy==1.26.4' \
       'PyOpenGL==3.1.6' \
@@ -269,33 +301,16 @@ RUN cp /opt/torch-constraints.txt /opt/capx-constraints.txt \
       'mink==1.1.0' \
       'networkx==3.6.1' \
       'pyglet==2.1.13' \
-      >> /opt/capx-constraints.txt
-
-# Clone WITHOUT --recurse-submodules, then init only the submodules the
-# Robosuite eval path uses. This skips curobo (huge, with nested CUDA
-# submodules), b1k (BEHAVIOR/Isaac Sim), verl (RL training) and LIBERO-PRO -
-# none of them needed here, and a large time and space saving.
-RUN /usr/bin/python3 -m venv --system-site-packages ${CAPX_VENV} \
+      >> /opt/capx-constraints.txt \
+    && /usr/bin/python3 -m venv --system-site-packages ${CAPX_VENV} \
     && git clone https://github.com/capgym/cap-x ${CAPX_ROOT} \
     && git -C ${CAPX_ROOT} checkout ${CAPX_REF} \
     && git -C ${CAPX_ROOT} submodule update --init \
       capx/third_party/sam3 \
       capx/third_party/contact_graspnet_pytorch \
-      capx/third_party/robosuite
-
-WORKDIR /ryzers/cap-x
-
-# Base runtime deps: the PyPI-resolvable subset of [project.dependencies],
-# minus torch/torchvision (kept from the base image) and the CUDA-only entries.
-# FIX: setuptools is pinned from both sides. Below 81 because sam3 imports
-# pkg_resources, dropped in 81. At or above 77 because robosuite pulls in
-# pynput -> evdev, whose pyproject.toml declares the PEP 639 SPDX form
-# (license = "BSD-3-Clause") that older setuptools rejects outright. The lower
-# bound is also what forces a copy into the venv: with a bare "<81" pip counts
-# the base image's system setuptools 68 as satisfying the requirement, leaves
-# the venv without its own, and the later --no-build-isolation builds pick up
-# that 68 and fail.
-RUN PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
+      capx/third_party/robosuite \
+    && cd ${CAPX_ROOT} \
+    && PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
       "gymnasium>=0.29" "tyro>=0.8.5" "pydantic>=2.7" "rich>=13.7" \
       "scipy>=1.12" "matplotlib>=3.10,<3.11" "imageio[ffmpeg]>=0.6.0" \
       requests tqdm h5py einops decord pycocotools pyyaml omegaconf \
@@ -309,26 +324,15 @@ RUN PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-c
     && : "CaP-X overrides pyrender's stale PyOpenGL==3.1.0 metadata to 3.1.6." \
          "pip cannot express uv's override, so install the locked pyrender" \
          "once all of its runtime dependencies are already present." \
-    && ${CAPX_VENV}/bin/pip install --no-cache-dir --no-deps "pyrender==0.1.45"
-
-# PyRoKi: JAX-based IK / trajopt, and the default motion layer here - it
-# replaces cuRobo for the Robosuite bench. Deliberately CPU-only, which keeps
-# the GPU for perception.
-RUN PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
+    && ${CAPX_VENV}/bin/pip install --no-cache-dir --no-deps "pyrender==0.1.45" \
+    && PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
       "jax==0.4.29" "jaxlib==0.4.29" \
       jaxlie jax_dataclasses jaxtyping loguru termcolor \
     && PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install \
       --no-cache-dir --no-deps \
       "git+https://github.com/brentyi/jaxls.git@6fe7cf9d56223736b2c0272d080ec7346203c648" \
-      "git+https://github.com/chungmin99/pyroki.git@95afccc22658c461ab1042a048ae4e9c24bc2a47"
-
-# Perception and simulator. All editable submodule installs use
-# --no-build-isolation because their setup.py imports numpy at build time,
-# mirroring CaP-X's uv `extra-build-dependencies`.
-# SAM3 is pure PyTorch and runs on ROCm torch. Its weights are gated on
-# HuggingFace, so they are pre-fetched with a token further down rather than
-# downloaded at runtime.
-RUN PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
+      "git+https://github.com/chungmin99/pyroki.git@95afccc22658c461ab1042a048ae4e9c24bc2a47" \
+    && PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-cache-dir \
       -e capx/third_party/sam3 \
     && : "contact_graspnet_pytorch ships only a setup.py, so pip would take the" \
          "legacy 'setup.py develop' path. Setuptools >=77 implements that by" \
@@ -341,42 +345,88 @@ RUN PIP_CONSTRAINT=/opt/capx-constraints.txt ${CAPX_VENV}/bin/pip install --no-c
     && : "capx itself goes in without deps - they are all handled above - so" \
          "this only puts the package on the path, editable so that students" \
          "can change a docstring and see the agent's prompt change." \
-    && ${CAPX_VENV}/bin/pip install --no-cache-dir --no-deps --no-build-isolation -e .
-
-# Loading the perception models onto the GPU can take several minutes on a cold
-# start. Upstream begins trials after 120 seconds even when those services are
-# still unavailable, which fails the first trials of every run.
-RUN sed -i \
+    && ${CAPX_VENV}/bin/pip install --no-cache-dir --no-deps --no-build-isolation -e . \
+    && sed -i \
       's/api_servers: list | None, wait_timeout: float = 120.0/api_servers: list | None, wait_timeout: float = 900.0/' \
       capx/envs/runner.py \
-    && grep -q "wait_timeout: float = 900.0" capx/envs/runner.py
+    && grep -q "wait_timeout: float = 900.0" capx/envs/runner.py \
+    && rm -rf \
+      ${CAPX_ROOT}/.git \
+      ${CAPX_ROOT}/capx/third_party/sam3/.git \
+      ${CAPX_ROOT}/capx/third_party/contact_graspnet_pytorch/.git \
+      ${CAPX_ROOT}/capx/third_party/robosuite/.git \
+      /opt/capx-constraints.txt \
+    && chown -R jovyan:100 ${CAPX_ROOT} \
+    && apt-get purge -y --auto-remove \
+      libglfw3-dev \
+      libosmesa6-dev \
+      python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ryzers/cap-x
 
 # ---------------------------------------------------------------------------
-# PASTE YOUR HUGGINGFACE TOKEN HERE TO BUILD, AND CLEAR IT BEFORE COMMITTING.
-# A build arg ends up in the image metadata, so this is for local builds only.
-# The committed value must stay empty; export HF_TOKEN and let build.sh pass
-# --secret id=hf_token instead, which keeps the token out of every layer.
+# Grounding runs on OWLv2 + SAM 2.1 rather than SAM3, which is why this build
+# needs no HuggingFace token and no gated-repo access.
+#
+# SAM3 does the whole job in one model: hand it a noun phrase, get back masks.
+# facebook/sam3 is gated though, so every build of this image needed an account
+# with approved access. The pair below splits that job in two - OWLv2 turns the
+# phrase into a box, SAM2 turns the box into a mask - and both are public.
+#
+# CaP-X reaches these through capx/integrations/vision/{owlvit,sam2}.py, which
+# already exist upstream; the shim appended further down is what points its
+# init_sam3 entry points at them. The model names here are the defaults in
+# capx/serving/launch_{owlvit,sam2}_server.py, repeated so the weights land in
+# the cache under the exact ids those servers ask for.
 # ---------------------------------------------------------------------------
-ARG HF_TOKEN=""
+ARG OWLV2_MODEL="google/owlv2-large-patch14-ensemble"
+ARG SAM2_MODEL="facebook/sam2.1-hiera-large"
 
-# Pre-fetch the SAM3 weights so a workshop does not spend its first ten minutes
-# downloading them, and so nothing at runtime needs a token. They cannot live
-# under /home/jovyan: the Hub mounts a per-user volume there, which would hide
-# anything baked in. facebook/sam3 is gated, so the build needs an account with
-# approved access.
-RUN --mount=type=secret,id=hf_token,required=false \
-    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || echo "${HF_TOKEN}")" \
-    HF_HOME=${CAPX_CACHE} ${CAPX_VENV}/bin/python -c \
-      "import os; \
-from huggingface_hub import snapshot_download; \
-assert os.environ.get('HF_TOKEN'), 'facebook/sam3 is gated - set HF_TOKEN, see the note above'; \
-snapshot_download('facebook/sam3', ignore_patterns=['*.msgpack', '*.h5', '*.onnx', '*tf_model*', '*flax*'])"
+# Pre-fetch the weights so a workshop does not spend its first ten minutes
+# downloading them. They cannot live under /home/jovyan: the Hub mounts a
+# per-user volume there, which would hide anything baked in.
+RUN HF_HOME=${CAPX_CACHE} ${CAPX_VENV}/bin/python -c \
+      "from huggingface_hub import snapshot_download; \
+ignore = ['*.msgpack', '*.h5', '*.onnx', '*tf_model*', '*flax*']; \
+snapshot_download('${OWLV2_MODEL}', ignore_patterns=ignore); \
+snapshot_download('${SAM2_MODEL}', ignore_patterns=ignore)" \
+    && chown -R jovyan:100 ${CAPX_CACHE}
+
+# Point CaP-X's init_sam3 / init_sam3_point_prompt at OWLv2 + SAM2 by appending
+# replacements to the end of the module that defines them, so the later
+# definitions win. Every API class reaches segmentation through those two
+# functions, including FrankaHandoverApi, which is hardwired to SAM3 with no
+# fallback, so this covers all six of the notebook's tasks without patching any
+# of them. See the header of sam3_via_owlv2_sam2.py for the reasoning.
+COPY ./course_data/capx/sam3_via_owlv2_sam2.py /tmp/sam3_via_owlv2_sam2.py
+COPY ./course_data/capx/nut_assembly_local_api.py /tmp/nut_assembly_local_api.py
+COPY ./course_data/capx/make_sam2_configs.py /tmp/make_sam2_configs.py
+RUN cat /tmp/sam3_via_owlv2_sam2.py >> capx/integrations/vision/sam3.py \
+    && : "Drop the one nut assembly tool that needs a server this image does" \
+         "not run. See the header of nut_assembly_local_api.py." \
+    && cat /tmp/nut_assembly_local_api.py >> capx/integrations/__init__.py \
+    && : "The env_configs still name the SAM3 server, which answers on a port" \
+         "nothing will be listening on now, so write _sam2 variants that start" \
+         "OWLv2 and SAM2 instead. capx_demo.py's SCENARIOS point at these." \
+    && ${CAPX_VENV}/bin/python /tmp/make_sam2_configs.py ${CAPX_ROOT} \
+    && rm /tmp/sam3_via_owlv2_sam2.py /tmp/nut_assembly_local_api.py /tmp/make_sam2_configs.py \
+    && ${CAPX_VENV}/bin/python -c \
+      "import inspect; \
+from capx.integrations.vision.sam3 import init_sam3; \
+src = inspect.getsource(init_sam3); \
+assert 'OWLv2' in src, 'the SAM3 shim did not take effect'; \
+from capx.integrations import FrankaControlNutAssemblyApiReducedLocal as NutApi; \
+assert 'point_prompt_molmo' in NutApi._UNSERVED; \
+print('grounding shim OK:', src.splitlines()[0]); \
+print('nut assembly api OK:', NutApi.__name__)" \
+    && chown -R jovyan:100 env_configs
 
 # The CaP-X kernel. Its `env` is why the notebook needs no setup cell: the
 # perception servers and launch.py are children of the kernel, so they inherit
 # the weight cache and the headless GL backend from here. HF_HOME is scoped to
-# this kernel for SAM3; notebook 04 starts lemond with HF_HOME=/opt/lemonade-cache
-# so the LLM still resolves against the baked GGUF.
+# this kernel for the OWLv2 and SAM2 weights; notebook 04 starts lemond with
+# HF_HOME=/opt/lemonade-cache so the LLM still resolves against the baked GGUF.
 RUN mkdir -p /usr/local/share/jupyter/kernels/capx \
     && printf '%s\n' \
       '{' \
@@ -411,8 +461,12 @@ RUN getent group audio >/dev/null || groupadd audio \
     && printf 'pcm.!default = null;\n' > /home/jovyan/.asoundrc \
     && printf '[general]\nemail = ""\n' > /home/jovyan/.streamlit/credentials.toml
 
-COPY ./course_data /ryzers/notebooks
-COPY ./course_data/lemonade_env.sh \
+COPY --chown=jovyan:100 ./course_data /ryzers/notebooks
+# capx/ holds the build-time grounding shim and the config generator, both
+# already applied to the CaP-X checkout above. Nothing runs them from here, so
+# they would only be clutter in the student's notebook listing.
+RUN rm -rf /ryzers/notebooks/capx
+COPY --chown=jovyan:100 ./course_data/lemonade_env.sh \
      ./course_data/manipulation_demo_headless.sh \
      ./course_data/manipulation_demo_streamlit.py \
      ./course_data/notebook_demo.py \
@@ -431,10 +485,8 @@ RUN ln -s /ryzers/notebooks/tests/test_ros.sh /ryzers/test_ros.sh \
       /home/jovyan/.cache \
       /home/jovyan/.streamlit \
       /home/jovyan/.asoundrc \
-      /opt/capx-cache \
-      /opt/lemonade-cache \
-      /ryzers \
       /tmp/runtime-jovyan \
+    && chown jovyan:100 /ryzers/notebooks \
     && printf '%s\n' \
       '#!/usr/bin/env bash' \
       'set -e' \
