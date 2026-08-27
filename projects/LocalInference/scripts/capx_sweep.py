@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-"""Run a quick compact-model sweep over CaP-X's non-Molmo single-arm tasks."""
+"""Run a quick compact-model sweep over CaP-X's single-arm tasks."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from pathlib import Path
 
 
 SERVER_URL = "http://localhost:13305/api/v1/chat/completions"
-CAPX_ROOT = Path(os.environ.get("CAPX_ROOT", "/ryzers/cap-x"))
 
 FAST_SCENARIOS = {
     "cube lift": "env_configs/cube_lifting/franka_robosuite_cube_lifting.yaml",
@@ -27,81 +26,6 @@ FAST_SCENARIOS = {
     "cube restack": "env_configs/cube_restack/franka_robosuite_cube_restack.yaml",
     "spill wipe": "env_configs/spill_wipe/franka_robosuite_spill_wipe.yaml",
 }
-
-
-def prepare_open_perception_configs(scenarios: dict[str, str]) -> dict[str, str]:
-    """Switch CaP-X from gated SAM3 to its ungated OWLv2 + SAM2 path."""
-    import yaml
-
-    integrations = CAPX_ROOT / "capx/integrations/__init__.py"
-    source = integrations.read_text(encoding="utf-8")
-    replacements = {
-        "FrankaControlApi(env, use_sam3=True)": (
-            "FrankaControlApi(env, use_sam3=False)"
-        ),
-        (
-            "FrankaControlSpillWipeApi("
-            "env, tcp_offset=[0.0, 0.0, -0.0158], use_sam3=True)"
-        ): (
-            "FrankaControlSpillWipeApi("
-            "env, tcp_offset=[0.0, 0.0, -0.0158], use_sam3=False)"
-        ),
-    }
-    for old, new in replacements.items():
-        if old not in source and new not in source:
-            raise RuntimeError(f"CaP-X perception registration changed: {old}")
-        source = source.replace(old, new)
-    integrations.write_text(source, encoding="utf-8")
-
-    config_dir = Path("/tmp/capx-open-perception")
-    config_dir.mkdir(parents=True, exist_ok=True)
-    prepared = {}
-    for label, relative_path in scenarios.items():
-        source_path = CAPX_ROOT / relative_path
-        config = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-        servers = []
-        replaced_sam3 = False
-        for server in config["api_servers"]:
-            if "launch_sam3_server" not in server.get("_target_", ""):
-                servers.append(server)
-                continue
-            replaced_sam3 = True
-            servers.extend(
-                [
-                    {
-                        "_target_": "capx.serving.launch_owlvit_server.main",
-                        "device": "cuda",
-                        "port": 8117,
-                        "host": "127.0.0.1",
-                        "model_name": "google/owlv2-large-patch14-ensemble",
-                    },
-                    {
-                        "_target_": "capx.serving.launch_sam2_server.main",
-                        "device": "cuda",
-                        "port": 8113,
-                        "host": "127.0.0.1",
-                        "model_name": "facebook/sam2.1-hiera-large",
-                    },
-                ]
-            )
-        if not replaced_sam3:
-            targets = {server.get("_target_", "") for server in servers}
-            already_open = (
-                "capx.serving.launch_owlvit_server.main" in targets
-                and "capx.serving.launch_sam2_server.main" in targets
-            )
-            if not already_open:
-                raise RuntimeError(
-                    f"neither SAM3 nor OWLv2+SAM2 servers found in {source_path}"
-                )
-        config["api_servers"] = servers
-        destination = config_dir / source_path.name
-        destination.write_text(
-            yaml.safe_dump(config, sort_keys=False),
-            encoding="utf-8",
-        )
-        prepared[label] = str(destination)
-    return prepared
 
 
 @dataclass(frozen=True)
@@ -160,6 +84,14 @@ MODELS = [
             "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:"
             "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
         ),
+    ),
+    ModelSpec(
+        "qwen3.8-27b",
+        "user.Qwen3.8-27B-UD-Q4_K_M",
+        1.0,
+        15.33,
+        "Qwen/Qwen3.8-27B generation_config.json",
+        "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q4_K_M.gguf",
     ),
     ModelSpec(
         "ministral-8b",
@@ -259,12 +191,6 @@ def parse_args() -> argparse.Namespace:
         help="Run the controlled oracle and write its report without loading an LLM",
     )
     parser.add_argument("--skip-pull", action="store_true")
-    parser.add_argument(
-        "--perception",
-        choices=("sam3", "open"),
-        default="sam3",
-        help="'open' uses ungated OWLv2 grounding with SAM2 segmentation",
-    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--list-models", action="store_true")
     return parser.parse_args()
@@ -423,11 +349,6 @@ def main() -> int:
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     os.environ["CAPX_WORK"] = str(output_dir / "artifacts")
-    scenarios = (
-        prepare_open_perception_configs(scenarios_requested)
-        if args.perception == "open"
-        else scenarios_requested
-    )
 
     # Imports are intentionally delayed until CAPX_WORK is fixed; capx_demo also
     # moves into CAPX_ROOT so upstream relative config paths resolve correctly.
@@ -442,6 +363,8 @@ def main() -> int:
         quiet_output as quiet,
     )
 
+    scenarios = scenarios_requested
+
     log = Logger(output_dir / "sweep.log")
     metadata = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -451,7 +374,9 @@ def main() -> int:
         "trials_per_task": args.trials,
         "max_tokens": args.max_tokens,
         "server_url": SERVER_URL,
-        "perception": args.perception,
+        # The image bakes in the OWLv2 + SAM2 path; kept so reports stay
+        # comparable with earlier sweeps that selected it at runtime.
+        "perception": "open",
         "scenarios": scenarios,
         "models": [] if args.oracle_only else [asdict(spec) for spec in selected],
     }
@@ -463,12 +388,7 @@ def main() -> int:
     summaries: list[dict] = []
     servers: list[object] = []
     try:
-        perception_services = (
-            "OWLv2, SAM2, Contact-GraspNet, and PyRoKi"
-            if args.perception == "open"
-            else "SAM3, Contact-GraspNet, and PyRoKi"
-        )
-        log(f"Starting shared {perception_services} services")
+        log("Starting shared OWLv2, SAM2, Contact-GraspNet, and PyRoKi services")
         setup_args = LaunchArgs(
             config_path=next(iter(scenarios.values())),
             model=selected[0].model,
