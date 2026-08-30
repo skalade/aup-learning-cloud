@@ -374,6 +374,28 @@ def show_paired_rollout_grid(
     _show_video_grid(entries, width, progress)
 
 
+# Gemma sometimes emits a control token straight into the fenced code block,
+# most often appended to the final line as `open_gripper()<unused56>`. It is a
+# decoding artifact rather than anything the model "wrote", but it reaches the
+# sandbox as a SyntaxError and costs the whole rollout. CaP-X's _extract_code()
+# only strips Markdown fences, so the cleanup happens here.
+SPECIAL_TOKEN = re.compile(
+    r"<unused\d+>|</?s>|<pad>|<eos>|<bos>|<end_of_turn>|<start_of_turn>"
+)
+
+
+def clean_program(program: str) -> tuple[str, list[str]]:
+    """Strip stray model control tokens from generated code.
+
+    Returns the cleaned program and the tokens removed, so a caller can show
+    that the repair happened instead of hiding it.
+    """
+    found = SPECIAL_TOKEN.findall(program)
+    if not found:
+        return program, []
+    return SPECIAL_TOKEN.sub("", program).rstrip(), found
+
+
 def analyze_program(program: str) -> dict:
     """Summarize how generated code uses CaP-X's grounded robot primitives."""
     calls = {name: 0 for name in PRIMITIVES}

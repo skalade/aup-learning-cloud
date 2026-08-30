@@ -9,13 +9,79 @@ Complete the notebooks in order:
 4. `4_robot_harness_optimization.ipynb`
 5. `temp_evolving_rai.ipynb`
 
-Notebook 4 begins with a workshop-sized, one-generation repair of an authentic
-cube-stack program using Gemma E2B. It then loads measured results from a longer
-two-generation HELIX/OpenCode evolution over equal cube-stack and spill-wipe
-targets. Qwen3-Coder proposes repository mutations, HELIX retains per-task
-winners on an instance frontier, and generation 2 may select or merge frontier
-parents. The notebook stops at the recorded train/validation evidence; run
-`scripts/rho_multitask_study.py` separately to repeat the longer experiment.
+## Notebook 4 — structure and time budget
+
+Notebook 4 is built for a 15–20 minute guided session:
+
+| Section | Content | Compute |
+| --- | --- | --- |
+| The experiment | Editable surface, `helix.toml`, evaluator boundary | pre-rendered |
+| One generation, live | A single mutation end to end | opt-in, several minutes |
+| Recorded run | Two-generation, two-task Qwen3-Coder evolution | pre-rendered |
+| Start the robot services | OWLv2, SAM2, Contact-GraspNet, PyRoKi | live, ~10 s |
+| Watch both policies run | Seed vs deployed, one layout per task | **live, ~55 s** |
+
+The seed-vs-deployed replay is the only section that runs live by default, and
+it executes frozen Python against the robot services with no model in the
+control loop. The recorded run supplies the search-progress plot, the lineage
+and gate decisions, and the deployed diff split per file.
+
+Every score the notebook shows comes from the six validation layouts the search
+optimized against, which keeps the session short at the cost of saying nothing
+about generalization. The notebook states that limit where it reports the
+numbers and points at the deployed repository for anyone who wants to replay it
+on layouts the search never saw.
+
+The appendix is off by default (`RUN_APPENDIX = False`). Its `helix.toml`
+objective names the defect so Gemma E2B can land one accepted mutation inside a
+live session, so it demonstrates the loop's mechanics rather than the agent's
+ability to diagnose. `rho_demo.DEFAULT_GUIDANCE_DISCLOSURE` carries that caveat
+and the notebook prints it before the run.
+
+## Generating notebook 4's recorded assets
+
+**`recorded_results/` is not committed.** Produce it before building the course
+image, or the recorded half of notebook 4 has nothing to read. Run this inside
+the LocalInference image on a machine with the GPU:
+
+```bash
+python /ryzers/notebooks/scripts/rho_multitask_study.py \
+  --output-dir /ryzers/notebooks/recorded_results \
+  --model user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M \
+  --generations 2 \
+  --proposals 4 \
+  --minibatch-size 2 \
+  --hidden-repeats 3
+```
+
+`--generations 2` is short because a six-generation version of this experiment
+was run first and everything it achieved landed in generation 1; the extra
+generations rejected most of their proposals and deployed a candidate that
+differed from the generation-1 winner by a `try/except` that re-raises.
+
+Notebook 4 needs only two things out of that run:
+
+- `rho_multitask_report.json` — schema `rho-multitask-helix-report/v2`
+- `repos/seed/` and `repos/selected/` — the two policy repositories the live
+  replay cell runs
+
+The study also writes `videos/` and replays a set of layouts the search never
+sampled, controlled by `--hidden-repeats`. The notebook renders neither, because
+it replays both policies live instead, so delete `videos/` before committing:
+it is the only large thing the study produces, and this repository has no Git
+LFS configuration. Without it the recorded tree is about 230 KB.
+
+Copy the resulting tree back to `projects/LocalInference/recorded_results/` so
+`build.sh` bakes it into the image. Verify it from the notebook's preflight cell
+or directly:
+
+```bash
+python -c "import sys; sys.path.insert(0, 'scripts'); import rho_report; \
+print(rho_report.format_preflight(rho_report.preflight('recorded_results')))"
+```
+
+Media paths are stored relative to the recorded root, so a study produced on one
+host replays correctly from `/ryzers/notebooks/recorded_results` in the image.
 
 ## Recorded study evidence
 
@@ -60,13 +126,20 @@ Measured on the workshop Strix Halo GPU:
 
 - CaP-X: 4.5 seconds for model setup, 11.4 seconds for perception/control
   setup, 14.2 seconds for one LLM call, and 11.8 seconds for one rollout.
-- RHO Part A: allow about 4–8 minutes for model/service setup, four simulator
-  evaluations, and one bounded OpenCode mutation.
-- RHO Part B: the notebook loads compact pre-rendered evidence immediately.
-  It shows only the train/validation scores already produced by HELIX. The
-  longer two-generation experiment remains available as
-  `scripts/rho_multitask_study.py` rather than running additional evaluation
-  suites in the notebook.
+- RHO service startup: the `ensure_services` cell sits immediately above the
+  live replay, so nothing loads OWLv2, SAM2, Contact-GraspNet or PyRoKi until
+  the notebook needs them. Run it early if you would rather pay the cost before
+  the session; it is idempotent and the later cell will reuse what is running.
+- RHO seed-vs-deployed replay: four rollouts, two per task, 10 to 16 seconds
+  each. This is the only live compute in the guided path. The seed crashes every
+  time; measured five times on each of the six validation layouts the deployed
+  policy solved 26 of 30, so budget for the occasional miss rather than treating
+  it as a failure. `scripts/rho_replay_scan.py` reproduces those pass rates, and
+  `rho_report.validation_trial` uses them to show the layouts that ran 5 for 5.
+- RHO recorded run: reads `recorded_results/` and renders immediately.
+- RHO one-generation-live cell: allow 4–8 minutes for four simulator
+  evaluations and one bounded OpenCode mutation. Off by default, and it starts
+  the services itself when enabled.
 
 Environment checks:
 

@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout, suppress
 from dataclasses import asdict, dataclass
 from html import escape
@@ -212,6 +212,23 @@ from rho_demo import evaluate_cli
 raise SystemExit(evaluate_cli())
 """
 
+# The single-task workshop prompts below deliberately hand the mutator the
+# diagnosis. Gemma E2B with eight turns does not reliably localize the defect
+# on its own, and this path exists to fit one accepted mutation inside a live
+# session. That makes it a demonstration of the HELIX loop's mechanics, not
+# evidence that the agent can diagnose. The multi-task study in
+# rho_multitask_demo.py takes the opposite stance and tells the mutator to
+# diagnose rather than assume. Surface DEFAULT_GUIDANCE_DISCLOSURE wherever
+# these results are shown.
+DEFAULT_GUIDANCE_DISCLOSURE = (
+    "This single-task configuration names the defect in helix.toml's objective "
+    "and background. Gemma E2B is given the diagnosis so that one mutation can "
+    "be accepted inside a live session, so treat an accepted result as evidence "
+    "that the gate and frontier machinery work end to end, not as evidence that "
+    "the agent diagnosed the failure. The recorded multi-task study instructs "
+    "its mutator to diagnose rather than assume."
+)
+
 DEFAULT_OBJECTIVE = """\
 Repair this authentic CaP-X generated program so it reliably stacks the red
 cube on the green cube. Diagnose the recorded indexing failure, inspect
@@ -237,12 +254,24 @@ def helix_config(
     *,
     objective: str = DEFAULT_OBJECTIVE,
     background: str = DEFAULT_BACKGROUND,
+    train_size: int = 1,
+    val_size: int = 1,
+    minibatch_size: int = 1,
+    perfect_score_threshold: float = 1.0,
+    max_evaluations: int | None = None,
+    max_turns: int = 8,
+    generations_limit: int = 4,
 ) -> str:
-    if not 1 <= generations <= 4:
-        raise ValueError("workshop generations must be between 1 and 4")
+    if not 1 <= generations <= generations_limit:
+        raise ValueError(
+            f"workshop generations must be between 1 and {generations_limit}"
+        )
     if '"""' in objective or '"""' in background:
         raise ValueError("HELIX prompts cannot contain TOML triple quotes")
-    max_evaluations = max(8, 2 + 3 * generations)
+    if minibatch_size > train_size:
+        raise ValueError("minibatch cannot be larger than the training split")
+    if max_evaluations is None:
+        max_evaluations = max(8, 2 + 3 * generations)
     return f'''\
 objective = """{objective}"""
 seed = "."
@@ -282,17 +311,17 @@ protected_files = [
 ]
 
 [dataset]
-train_size = 1
-val_size = 1
+train_size = {train_size}
+val_size = {val_size}
 
 [evolution]
 max_generations = {generations}
-perfect_score_threshold = 1.0
+perfect_score_threshold = {perfect_score_threshold}
 max_evaluations = {max_evaluations}
 merge_enabled = false
 num_parallel_proposals = 1
 mutations_per_parent = 1
-minibatch_size = 1
+minibatch_size = {minibatch_size}
 max_workers = 1
 cache_evaluation = true
 acceptance_criterion = "strict_improvement"
@@ -301,7 +330,7 @@ frontier_type = "instance"
 [agent]
 backend = "opencode"
 model = "lemonade/{MODEL_API_ID}"
-max_turns = 8
+max_turns = {max_turns}
 background = """{background}"""
 
 [sandbox]
@@ -702,12 +731,28 @@ def prepare_workshop(
     background: str = DEFAULT_BACKGROUND,
     support_files: Mapping[str, str] | None = None,
     reset: bool = True,
+    training_trials: Sequence[int] | None = None,
+    heldout_trials: Sequence[int] | None = None,
+    helix_overrides: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Create a disposable repository around verbatim CaP-X generated code."""
-    if not 1 <= generations <= 4:
-        raise ValueError("workshop generations must be between 1 and 4")
+    """Create a disposable repository around verbatim CaP-X generated code.
+
+    ``training_trials``/``heldout_trials`` turn each split into several distinct
+    layouts, which is what a pass-rate study needs; leaving them unset keeps the
+    original one-trial-per-split behaviour.
+    """
+    overrides = dict(helix_overrides or {})
+    generations_limit = int(overrides.get("generations_limit", 4))
+    if not 1 <= generations <= generations_limit:
+        raise ValueError(
+            f"workshop generations must be between 1 and {generations_limit}"
+        )
     if heldout_trial < 0:
         raise ValueError("held-out trial must be non-negative")
+    if training_trials is not None and heldout_trials is not None:
+        overlap = set(int(t) for t in training_trials) & set(int(t) for t in heldout_trials)
+        if overlap:
+            raise ValueError(f"held-out trials must be unseen during training: {sorted(overlap)}")
     root = Path(root).expanduser().resolve()
     if reset:
         _safe_reset(root)
@@ -726,6 +771,10 @@ def prepare_workshop(
             "heldout_trial": int(heldout_trial),
         }
     )
+    if training_trials is not None:
+        persisted_provenance["training_trials"] = [int(t) for t in training_trials]
+    if heldout_trials is not None:
+        persisted_provenance["heldout_trials"] = [int(t) for t in heldout_trials]
 
     _write_candidate(root, program)
     for relative, source in (support_files or {}).items():
@@ -742,6 +791,7 @@ def prepare_workshop(
             generations,
             objective=objective,
             background=background,
+            **overrides,
         )
     )
     (root / "probe.py").write_text(PROBE_SOURCE)
@@ -926,9 +976,15 @@ def _trial_id(candidate_root: Path, split: str, example_id: str) -> int:
         if trial < 0:
             raise ValueError("trial override must be non-negative")
         return trial
-    int(example_id)  # The legacy single-task evaluator uses positional IDs.
+    index = int(example_id)  # The legacy single-task evaluator uses positional IDs.
     path = candidate_root / "provenance.json"
     provenance = json.loads(path.read_text()) if path.exists() else {}
+    # A pass-rate study scores one candidate across several distinct layouts, so
+    # the positional id selects a trial rather than being discarded. Studies that
+    # never record a trial list keep the original single-trial behaviour.
+    trials = provenance.get("training_trials" if split == "train" else "heldout_trials")
+    if trials:
+        return int(trials[index % len(trials)])
     key = "training_trial" if split == "train" else "heldout_trial"
     return int(provenance.get(key, 1 if split == "train" else 2))
 
@@ -1324,9 +1380,22 @@ def run_helix(
     merge: bool = False,
 ) -> BoundedRun:
     """Stream a bounded HELIX evolution in the disposable candidate repo."""
-    if not 1 <= generations <= 4:
-        raise ValueError("workshop generations must be between 1 and 4")
     root = Path(root).resolve()
+    # The candidate's own helix.toml decides how long a search may run, so the
+    # workshop repository stays bounded at 4 while a study can configure more
+    # without this guard needing to know which is which.
+    config_path = root / "helix.toml"
+    permitted = 4
+    if config_path.is_file():
+        declared = re.search(
+            r"^max_generations\s*=\s*(\d+)", config_path.read_text(), re.M
+        )
+        if declared:
+            permitted = int(declared.group(1))
+    if not 1 <= generations <= permitted:
+        raise ValueError(
+            f"generations must be between 1 and {permitted} for this repository"
+        )
     evaluation_log = Path(
         f"/tmp/rho-evaluations-{os.getpid()}-{time.time_ns()}.jsonl"
     )

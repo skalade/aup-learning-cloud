@@ -38,46 +38,75 @@ DEFAULT_GENERATIONS = 2
 DEFAULT_TIMEOUT = 1200.0
 MOCK_LABEL = "MOCK_STATIC_CONTRACT_NOT_LIVE_CAPX"
 
-CONFIGS = {
-    "cube_stack": "env_configs/cube_stack/franka_robosuite_cube_stack.yaml",
-    "spill_wipe": "env_configs/spill_wipe/franka_robosuite_spill_wipe.yaml",
-}
-
-SCENARIOS: dict[str, dict[str, Any]] = {
-    "stack_train": {
-        "task": "cube_stack",
-        "trial": 1,
-        "policy_path": "solver/tasks/cube_stack.py",
+# One entry per deployable policy. The scenario ids, the train/val splits, the
+# contract text, and the fixture copy are all derived from this registry, so
+# adding a task means editing here and dropping a seed policy in FIXTURE_ROOT.
+TASKS: dict[str, dict[str, str]] = {
+    "cube_stack": {
+        "short": "stack",
+        "config": "env_configs/cube_stack/franka_robosuite_cube_stack.yaml",
+        "summary": "stacks a red cube on a green cube",
     },
-    "wipe_train": {
-        "task": "spill_wipe",
-        "trial": 1,
-        "policy_path": "solver/tasks/spill_wipe.py",
-    },
-    "stack_val": {
-        "task": "cube_stack",
-        "trial": 2,
-        "policy_path": "solver/tasks/cube_stack.py",
-    },
-    "wipe_val": {
-        "task": "spill_wipe",
-        "trial": 2,
-        "policy_path": "solver/tasks/spill_wipe.py",
+    # spill_wipe is intentionally absent: its seed already solves most layouts
+    # (only trial 5 of 8 never succeeded across a two-repeat scan), so it would
+    # contribute a validation axis with no headroom and a lot of rollout noise.
+    "cube_lift": {
+        "short": "lift",
+        "config": "env_configs/cube_lifting/franka_robosuite_cube_lifting.yaml",
+        "summary": "picks up the red cube and lifts it clear of the table",
     },
 }
 
-SPLITS = {
-    "train": ["stack_train", "wipe_train"],
-    "val": ["stack_val", "wipe_val"],
-}
+# Trials a split draws from, per task. A task may override either list when its
+# seed does not fail on the default trials; a single-rollout instance that the
+# seed already solves contributes no headroom to the search.
+TRAIN_TRIALS: tuple[int, ...] = (1,)
+# Three validation layouts per task. Both seeds fail every one of these
+# deterministically, so the frontier starts at zero and each gain is real.
+VAL_TRIALS: tuple[int, ...] = (2, 3, 4)
 
-CONTRACT = """\
+# Retained for callers that assume one trial per split.
+TRAIN_TRIAL = TRAIN_TRIALS[0]
+VAL_TRIAL = VAL_TRIALS[0]
+
+CONFIGS = {task: spec["config"] for task, spec in TASKS.items()}
+
+
+def split_trials(task: str, split: str) -> tuple[int, ...]:
+    default = TRAIN_TRIALS if split == "train" else VAL_TRIALS
+    return tuple(TASKS[task].get(f"{split}_trials", default))
+
+
+def _scenario_id(short: str, split: str, index: int, count: int) -> str:
+    """Keep the single-trial ids stable and number the rest from one."""
+    return f"{short}_{split}" if count == 1 else f"{short}_{split}{index + 1}"
+
+
+SCENARIOS: dict[str, dict[str, Any]] = {}
+SPLITS: dict[str, list[str]] = {"train": [], "val": []}
+for _task, _spec in TASKS.items():
+    for _split in ("train", "val"):
+        _trials = split_trials(_task, _split)
+        for _index, _trial in enumerate(_trials):
+            _scenario = _scenario_id(_spec["short"], _split, _index, len(_trials))
+            SCENARIOS[_scenario] = {
+                "task": _task,
+                "trial": _trial,
+                "policy_path": f"solver/tasks/{_task}.py",
+            }
+            SPLITS[_split].append(_scenario)
+
+_TASK_BULLETS = "\n".join(
+    f"- `solver/tasks/{task}.py` {spec['summary']}."
+    for task, spec in TASKS.items()
+)
+
+CONTRACT = f"""\
 # Multi-task CaP-X repository contract
 
-This repository deploys two generated robot policies:
+This repository deploys {len(TASKS)} generated robot policies:
 
-- `solver/tasks/cube_stack.py` stacks a red cube on a green cube.
-- `solver/tasks/spill_wipe.py` wipes the complete detected spill region.
+{_TASK_BULLETS}
 
 The evaluator runs different simulator layouts for training and validation.
 Its feedback includes deployable reward, raw environment reward, task completion,
@@ -99,12 +128,12 @@ Important API facts:
   use them for calculations, path generation, and reusable control decisions.
 """
 
-OBJECTIVE = """\
-Evolve this repository into a robust two-task robot policy package. Improve
-the cube-stack and spill-wipe policies using evaluator evidence. Prefer general
-repairs and shared helpers over trial-specific constants. Multiple specialist
-candidates are valuable: HELIX will retain repositories that win different
-validation tasks."""
+OBJECTIVE = f"""\
+Evolve this repository into a robust {len(TASKS)}-task robot policy package.
+Improve every policy under solver/tasks/ using evaluator evidence. Prefer
+general repairs and shared helpers over trial-specific constants. Multiple
+specialist candidates are valuable: HELIX will retain repositories that win
+different validation tasks."""
 
 BACKGROUND = """\
 This is a two-generation GEPA-style repository evolution. Read CONTRACT.md,
@@ -214,11 +243,32 @@ def helix_config(
     *,
     model: str = DEFAULT_MODEL,
     generations: int = DEFAULT_GENERATIONS,
+    generations_limit: int = 4,
+    train_size: int | None = None,
+    val_size: int | None = None,
+    num_parallel_proposals: int = 2,
+    mutations_per_parent: int = 1,
+    minibatch_size: int = 1,
+    max_evaluations: int = 40,
+    merge_subsample_size: int | None = None,
+    perfect_score_threshold: float = 1.1,
 ) -> str:
+    """Render helix.toml.
+
+    Defaults reproduce the bounded workshop run. Recording studies raise
+    ``generations_limit`` and the evaluation budget to search for longer.
+    """
     if generations < 2:
         raise ValueError("the multi-task workshop requires at least two generations")
-    if generations > 4:
-        raise ValueError("the multi-task workshop is capped at four generations")
+    if generations > generations_limit:
+        raise ValueError(
+            f"generations={generations} exceeds generations_limit={generations_limit}"
+        )
+    # Cover every scenario the manifest defines unless told otherwise.
+    train_size = len(SPLITS["train"]) if train_size is None else train_size
+    val_size = len(SPLITS["val"]) if val_size is None else val_size
+    if merge_subsample_size is None:
+        merge_subsample_size = val_size
     api_model = opencode_model_id(model)
     return f'''\
 objective = """{OBJECTIVE}"""
@@ -261,22 +311,22 @@ protected_files = [
 ]
 
 [dataset]
-train_size = 2
-val_size = 2
+train_size = {train_size}
+val_size = {val_size}
 
 [evolution]
 max_generations = {generations}
-# Scores are bounded by 1.0; 1.1 deliberately prevents a generation-1
-# universal candidate from short-circuiting the two-generation lesson.
-perfect_score_threshold = 1.1
-max_evaluations = 40
+# Scores are bounded by 1.0, so a threshold above 1.0 stops a candidate that
+# wins everything early from short-circuiting the rest of the search.
+perfect_score_threshold = {perfect_score_threshold}
+max_evaluations = {max_evaluations}
 merge_enabled = true
 max_merge_invocations = 2
 merge_val_overlap_floor = 1
-merge_subsample_size = 2
-num_parallel_proposals = 2
-mutations_per_parent = 1
-minibatch_size = 1
+merge_subsample_size = {merge_subsample_size}
+num_parallel_proposals = {num_parallel_proposals}
+mutations_per_parent = {mutations_per_parent}
+minibatch_size = {minibatch_size}
 max_workers = 1
 cache_evaluation = true
 acceptance_criterion = "strict_improvement"
@@ -326,6 +376,7 @@ def prepare_workshop(
     model: str = DEFAULT_MODEL,
     generations: int = DEFAULT_GENERATIONS,
     reset: bool = True,
+    helix_overrides: Mapping[str, Any] | None = None,
 ) -> Path:
     """Create a disposable multi-policy Git repository for HELIX."""
     root = Path(root).expanduser().resolve()
@@ -335,7 +386,7 @@ def prepare_workshop(
     tasks.mkdir(parents=True, exist_ok=True)
     (root / "solver" / "__init__.py").write_text("")
     (tasks / "__init__.py").write_text("")
-    for task in ("cube_stack", "spill_wipe"):
+    for task in TASKS:
         shutil.copyfile(FIXTURE_ROOT / f"{task}.py", tasks / f"{task}.py")
     (root / "solver" / "geometry.py").write_text(GEOMETRY_SOURCE)
     (root / "solver" / "runtime.py").write_text(RUNTIME_SOURCE)
@@ -351,7 +402,7 @@ def prepare_workshop(
         json.dumps(opencode_config(model), indent=2) + "\n"
     )
     (root / "helix.toml").write_text(
-        helix_config(model=model, generations=generations)
+        helix_config(model=model, generations=generations, **dict(helix_overrides or {}))
     )
     (root / ".gitignore").write_text(
         ".helix/\n.helix_artifacts/\n.helix_opencode_state/\n"
@@ -437,6 +488,16 @@ def _mock_result(
             "Wipe policy stopped cleanly when the episode terminated."
             if passed
             else "Wipe policy continued issuing blocking poses after termination."
+        )
+    elif task == "cube_lift":
+        # The seed calls numpy.array() without importing numpy.
+        passed = "numpy." not in compact or (
+            "importnumpy" in compact or "fromnumpyimport" in compact
+        )
+        feedback = (
+            "Lift policy resolved every module it referenced."
+            if passed
+            else "Lift policy referenced numpy without importing it."
         )
     else:
         raise ValueError(f"unsupported mock task: {task}")
@@ -595,12 +656,38 @@ def materialize_mock_evolution(
     worktrees.mkdir(parents=True, exist_ok=True)
     evaluations.mkdir(parents=True, exist_ok=True)
 
-    candidates = {
-        "g0-s0": {"scores": [0.0, 0.0], "task": None},
-        "g1-s1": {"scores": [1.0, 0.0], "task": "cube_stack"},
-        "g1-s2": {"scores": [0.0, 1.0], "task": "spill_wipe"},
-        "g2-m1": {"scores": [1.0, 1.0], "task": "merge"},
+    task_order = list(TASKS)
+    # Scores are per validation instance, and a task may own several of them.
+    val_ids = SPLITS["val"]
+    val_tasks = [str(SCENARIOS[scenario_id]["task"]) for scenario_id in val_ids]
+    width = len(val_ids)
+
+    # One single-task specialist per task, then a merge that carries all of them.
+    candidates: dict[str, dict[str, Any]] = {
+        "g0-s0": {"scores": [0.0] * width, "task": None}
     }
+    for index, task in enumerate(task_order):
+        scores = [1.0 if owner == task else 0.0 for owner in val_tasks]
+        candidates[f"g1-s{index + 1}"] = {"scores": scores, "task": task}
+    candidates["g2-m1"] = {"scores": [1.0] * width, "task": "merge"}
+
+    def _repair(destination: Path, task: str) -> None:
+        path = destination / "solver" / "tasks" / f"{task}.py"
+        if not path.exists():
+            return
+        source = path.read_text()
+        if task == "cube_stack":
+            source = (
+                source.replace("green_pose[0][2]", "green_pose[2]")
+                .replace("green_pose[0][0]", "green_pose[0]")
+                .replace("green_pose[0][1]", "green_pose[1]")
+            )
+        elif task == "spill_wipe":
+            source += "\n# safe_goto handles terminated episodes in the static mock\n"
+        elif task == "cube_lift":
+            source = "import numpy\n" + source
+        path.write_text(source)
+
     for candidate_id, candidate in candidates.items():
         destination = worktrees / candidate_id
         shutil.copytree(
@@ -609,20 +696,11 @@ def materialize_mock_evolution(
             dirs_exist_ok=True,
             ignore=shutil.ignore_patterns(".git", ".helix", "__pycache__"),
         )
-        stack = destination / "solver" / "tasks" / "cube_stack.py"
-        wipe = destination / "solver" / "tasks" / "spill_wipe.py"
-        if candidate_id in {"g1-s1", "g2-m1"}:
-            stack.write_text(
-                stack.read_text()
-                .replace("green_pose[0][2]", "green_pose[2]")
-                .replace("green_pose[0][0]", "green_pose[0]")
-                .replace("green_pose[0][1]", "green_pose[1]")
-            )
-        if candidate_id in {"g1-s2", "g2-m1"}:
-            wipe.write_text(
-                wipe.read_text()
-                + "\n# safe_goto handles terminated episodes in the static mock\n"
-            )
+        if candidate["task"] == "merge":
+            for task in task_order:
+                _repair(destination, task)
+        elif candidate["task"]:
+            _repair(destination, str(candidate["task"]))
         if candidate["task"]:
             (destination / ".agent_task_prompt.md").write_text(
                 "## Diagnostics\n\n### Example 0\n"
@@ -657,7 +735,8 @@ def materialize_mock_evolution(
             )
         )
 
-    lineage = [
+    specialists = [f"g1-s{index + 1}" for index in range(len(task_order))]
+    lineage: list[dict[str, Any]] = [
         {
             "id": "g0-s0",
             "parent": None,
@@ -665,35 +744,29 @@ def materialize_mock_evolution(
             "operation": "seed",
             "generation": 0,
             "files_changed": [],
-        },
-        {
-            "id": "g1-s1",
-            "parent": "g0-s0",
-            "parents": ["g0-s0"],
-            "operation": "mutate",
-            "generation": 1,
-            "files_changed": ["solver/tasks/cube_stack.py"],
-        },
-        {
-            "id": "g1-s2",
-            "parent": "g0-s0",
-            "parents": ["g0-s0"],
-            "operation": "mutate",
-            "generation": 1,
-            "files_changed": ["solver/tasks/spill_wipe.py"],
-        },
+        }
+    ]
+    for candidate_id, task in zip(specialists, task_order):
+        lineage.append(
+            {
+                "id": candidate_id,
+                "parent": "g0-s0",
+                "parents": ["g0-s0"],
+                "operation": "mutate",
+                "generation": 1,
+                "files_changed": [f"solver/tasks/{task}.py"],
+            }
+        )
+    lineage.append(
         {
             "id": "g2-m1",
-            "parent": "g1-s1",
-            "parents": ["g1-s1", "g1-s2"],
+            "parent": specialists[0],
+            "parents": specialists,
             "operation": "merge",
             "generation": 2,
-            "files_changed": [
-                "solver/tasks/cube_stack.py",
-                "solver/tasks/spill_wipe.py",
-            ],
-        },
-    ]
+            "files_changed": [f"solver/tasks/{task}.py" for task in task_order],
+        }
+    )
     (helix_root / "lineage.json").write_text(json.dumps(lineage, indent=2))
     (helix_root / "state.json").write_text(
         json.dumps(
@@ -708,15 +781,18 @@ def materialize_mock_evolution(
                     for candidate_id, candidate in candidates.items()
                 },
                 "active_frontier": {
-                    "0": ["g1-s1", "g2-m1"],
-                    "1": ["g1-s2", "g2-m1"],
+                    str(index): [
+                        specialists[task_order.index(val_tasks[index])],
+                        "g2-m1",
+                    ]
+                    for index in range(width)
                 },
                 "frontier_type": "instance",
                 "budget": {"evaluations": 20},
                 "merge_counter": 1,
-                "merge_attempted_pairs": [["g1-s1", "g1-s2"]],
+                "merge_attempted_pairs": [specialists[:2]],
                 "merge_description_triplets": [
-                    ["g1-s1", "g1-s2", "4d6f636b4d65726765436f6d6d69745368613031"]
+                    [*specialists[:2], "4d6f636b4d65726765436f6d6d69745368613031"]
                 ],
             },
             indent=2,
@@ -937,31 +1013,36 @@ def candidate_lineage(root: Path | str = DEFAULT_ROOT) -> list[dict[str, Any]]:
 def evolution_lesson(summary: Mapping[str, Any]) -> dict[str, Any]:
     """Extract the specialist/frontier/merge teaching claims from a run."""
     candidates = summary.get("candidates", {})
-    stack_specialists: list[str] = []
-    wipe_specialists: list[str] = []
+    keys = sorted(
+        {key for candidate in candidates.values() for key in candidate.get("scores", {})}
+    )
+    # A task may own several validation layouts, so specialisation is measured
+    # per task rather than per instance.
+    key_task = {key: str(SCENARIOS[key]["task"]) for key in keys if key in SCENARIOS}
+    specialists: dict[str, list[str]] = {task: [] for task in sorted(set(key_task.values()))}
     broad_candidates: list[str] = []
     covered_difficult_keys: set[str] = set()
     for candidate_id, candidate in candidates.items():
-        scores = candidate.get("scores", {})
-        stack = float(scores.get("stack_val", 0.0))
-        wipe = float(scores.get("wipe_val", 0.0))
+        scores = {
+            key: float(candidate.get("scores", {}).get(key, 0.0)) for key in keys
+        }
+        wins = candidate.get("wins", [])
         if candidate.get("frontier"):
-            if "stack_val" in candidate.get("wins", []) and stack > 0.0:
-                covered_difficult_keys.add("stack_val")
-            if "wipe_val" in candidate.get("wins", []) and wipe > 0.0:
-                covered_difficult_keys.add("wipe_val")
-        if stack > 0.0 and wipe <= 0.0:
-            stack_specialists.append(candidate_id)
-        if wipe > 0.0 and stack <= 0.0:
-            wipe_specialists.append(candidate_id)
-        if stack > 0.0 and wipe > 0.0:
+            covered_difficult_keys.update(
+                key for key in keys if key in wins and scores[key] > 0.0
+            )
+        positive_tasks = {
+            key_task[key] for key in keys if key in key_task and scores[key] > 0.0
+        }
+        if len(positive_tasks) == 1:
+            specialists[next(iter(positive_tasks))].append(candidate_id)
+        elif len(positive_tasks) > 1:
             broad_candidates.append(candidate_id)
     return {
-        "multi_key_frontier": len(covered_difficult_keys) == 2,
+        "multi_key_frontier": len(covered_difficult_keys) >= 2,
         "covered_difficult_keys": sorted(covered_difficult_keys),
-        "specialist_pair": bool(stack_specialists and wipe_specialists),
-        "stack_specialists": stack_specialists,
-        "wipe_specialists": wipe_specialists,
+        "specialist_pair": sum(1 for owned in specialists.values() if owned) >= 2,
+        "specialists": specialists,
         "broad_candidates": broad_candidates,
         "merge_attempted": bool(summary.get("merge_attempted_pairs")),
         "merge_ancestry": summary.get("merge_ancestry", []),
@@ -1005,6 +1086,16 @@ def hidden_rollouts(
             )
             results.append(result)
     return results
+
+
+def replay_trials(
+    root: Path | str,
+    *,
+    trials: Mapping[str, int | Sequence[int]],
+    capture: bool = True,
+) -> list[dict[str, Any]]:
+    """Run a frozen repository on caller-selected trials, held out or not."""
+    return hidden_rollouts(root, trials=trials, capture=capture)
 
 
 def summarize_rollouts(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
