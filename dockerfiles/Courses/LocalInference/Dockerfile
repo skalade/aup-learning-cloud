@@ -604,12 +604,10 @@ RUN ln -s /ryzers/notebooks/tests/test_ros.sh /ryzers/test_ros.sh \
     && ln -s /ryzers/notebooks/tests/test_capx.sh /ryzers/test_capx.sh \
     && ln -s /ryzers/notebooks/tests/test_rho.sh /ryzers/test_rho.sh \
     && ln -s /ryzers/notebooks/tests/test_rho_multitask.sh /ryzers/test_rho_multitask.sh \
-    && ln -s /ryzers/notebooks/tests/test_rai_toy_evolution.sh /ryzers/test_rai_toy_evolution.sh \
     && chmod +x \
       /ryzers/notebooks/scripts/*.sh \
       /ryzers/test_rho.sh \
       /ryzers/test_rho_multitask.sh \
-      /ryzers/test_rai_toy_evolution.sh \
     && : "Only the symlinks created just above need an owner change. Every" \
          "large tree was already handed over by the layer that built it, so" \
          "there is deliberately no recursive chown here - one would copy the" \

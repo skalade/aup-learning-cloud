@@ -7,7 +7,6 @@ Complete the notebooks in order:
 2. `2_robot_agents.ipynb`
 3. `3_code_as_policy.ipynb`
 4. `4_robot_harness_optimization.ipynb`
-5. `temp_evolving_rai.ipynb`
 
 ## Notebook 4 — structure and time budget
 
@@ -113,40 +112,15 @@ host replays correctly from `/ryzers/notebooks/recorded_results` in the image.
 
 ## Recorded study evidence
 
-`recorded_results/overnight_study_summary.json` is the compact entry point for
-the controlled overnight study. It links to:
+`recorded_results/` holds everything notebook 4 reads:
 
-- `capx_matrix_analysis.json`: 60 same-image model rollouts, the 4-task oracle,
-  task metrics, latency, code signals, and failure taxonomy.
-- `rho_study_analysis.json`: three single-policy mutation-agent preflights,
-  Qwen surface comparisons, the two-generation multi-task result, and the
-  bounded cube-restack depth study.
-- `video_validation.json`: recording counts, report-path checks, container
-  validation, and ffprobe results.
-- `capx_selected/provenance.json`: selected local Gemma programs and their
-  exact source trials.
+- `rho_multitask_report.json`: the recorded two-generation run, carrying the
+  per-instance frontier, the selected candidate and its diff, the hidden-trial
+  scores before and after evolution, and the study provenance.
+- `repos/seed/` and `repos/selected/`: the seed repository and the deployed one,
+  as plain Python the notebook diffs and executes.
 
-The raw per-trial CaP-X and RHO reports remain below `recorded_results/`.
-Regenerate the compact analyses after adding new shards with:
-
-```bash
-python scripts/capx_analyze.py \
-  recorded_results/capx_primary_oracle/results.json \
-  recorded_results/capx_primary_qwen/results.json \
-  recorded_results/capx_local_gemma_shards/*/results.json \
-  --output recorded_results/capx_matrix_analysis.json
-python scripts/rho_analyze.py \
-  --recorded-root recorded_results \
-  --capx-analysis recorded_results/capx_matrix_analysis.json \
-  --output recorded_results/rho_study_analysis.json
-```
-
-The temporary Evolving RAI notebook applies the same one-generation
-repository-evolution pattern to a live RAI tool-calling agent. A deterministic
-in-memory tabletop replaces the full O3DE benchmark so it fits the workshop:
-HELIX edits both `prompt.py` and `tools.py`, the notebook displays the selected
-files, and RAI reruns one held-out manipulation test. It does not replay or
-claim to reproduce paper results.
+Rebuild both with the commands under "Generating notebook 4's recorded assets".
 
 ## Measured workshop runtime
 
@@ -176,20 +150,13 @@ Environment checks:
 /ryzers/test_capx.sh
 /ryzers/test_rho.sh
 /ryzers/test_rho_multitask.sh
-/ryzers/test_rai_toy_evolution.sh
 ```
 
-The toy RAI evolution test is static/mock by default. Inside the
-LocalInference image, opt into a real RAI seed-versus-repaired agent check:
-
-```bash
-RAI_TOY_RUN_LIVE=1 /ryzers/test_rai_toy_evolution.sh
-```
-
-The workshop's Gemma E2B, Gemma E4B, and Qwen3-Coder Q4_K_M GGUFs are baked
-under `/opt/lemonade-cache`, outside the JupyterHub home-volume mount. Notebook
-4 uses Gemma E2B for the fast live mutation and the 17.3 GB Qwen checkpoint for
-the recorded multi-task evolution. SAM2.1 Large and OWLv2 Large are likewise
+The workshop's Gemma E2B and Gemma E4B GGUFs are baked under
+`/opt/lemonade-cache`, outside the JupyterHub home-volume mount. The
+Qwen3-Coder mutation checkpoint is deliberately not baked in: notebook 4 replays
+a recorded run and loads no language model, so reproducing the evolution means
+pulling it first, as shown above. SAM2.1 Large and OWLv2 Large are likewise
 baked under `/opt/capx-cache`; neither runtime path needs a Hugging Face token
 or a first-run model download. Their checkpoints are staged through FP16 before
 an on-device FP32 conversion to avoid a multi-minute ROCm transfer while
