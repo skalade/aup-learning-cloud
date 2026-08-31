@@ -61,8 +61,9 @@ TASKS: dict[str, dict[str, str]] = {
 # seed does not fail on the default trials; a single-rollout instance that the
 # seed already solves contributes no headroom to the search.
 TRAIN_TRIALS: tuple[int, ...] = (1,)
-# Three validation layouts per task. Both seeds fail every one of these
-# deterministically, so the frontier starts at zero and each gain is real.
+# Three validation trials per task. rho_demo.seed_scene pins each id to a fixed
+# scene. Both seeds fail every one of them deterministically, since the bug is
+# in the code rather than the physics, so the frontier starts at zero.
 VAL_TRIALS: tuple[int, ...] = (2, 3, 4)
 
 # Retained for callers that assume one trial per split.
@@ -528,6 +529,7 @@ def score_scenario(
     *,
     capture: bool = False,
     timeout_seconds: float = 180.0,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     root = Path(root).resolve()
     if os.environ.get("RHO_MULTITASK_MOCK") == "1":
@@ -541,6 +543,7 @@ def score_scenario(
         timeout_seconds=timeout_seconds,
         config_path=str(scenario["config_path"]),
         policy_path=str(scenario["policy_path"]),
+        progress=progress,
     )
     result["task"] = str(scenario["task"])
     result["scenario_id"] = scenario_id
@@ -1016,7 +1019,7 @@ def evolution_lesson(summary: Mapping[str, Any]) -> dict[str, Any]:
     keys = sorted(
         {key for candidate in candidates.values() for key in candidate.get("scores", {})}
     )
-    # A task may own several validation layouts, so specialisation is measured
+    # A task may own several validation trials, so specialisation is measured
     # per task rather than per instance.
     key_task = {key: str(SCENARIOS[key]["task"]) for key in keys if key in SCENARIOS}
     specialists: dict[str, list[str]] = {task: [] for task in sorted(set(key_task.values()))}
@@ -1054,6 +1057,7 @@ def hidden_rollouts(
     *,
     trials: Mapping[str, int | Sequence[int]],
     capture: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run frozen policies on caller-selected trials never used by HELIX."""
     root = Path(root)
@@ -1083,6 +1087,7 @@ def hidden_rollouts(
                 f"hidden_{task}_{trial}",
                 scenario,
                 capture=capture,
+                progress=progress,
             )
             results.append(result)
     return results
@@ -1093,9 +1098,10 @@ def replay_trials(
     *,
     trials: Mapping[str, int | Sequence[int]],
     capture: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run a frozen repository on caller-selected trials, held out or not."""
-    return hidden_rollouts(root, trials=trials, capture=capture)
+    return hidden_rollouts(root, trials=trials, capture=capture, progress=progress)
 
 
 def summarize_rollouts(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

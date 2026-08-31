@@ -44,6 +44,21 @@ def scenario_label(key: str) -> str:
     split_name = "validation" if split == "val" else "train"
     return f"{name} ({split_name} {index})" if index else f"{name} ({split_name})"
 
+MUTATION_MODEL = "user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M"
+
+# The 30B mutation model is not baked into the course image. It is 18 GB and
+# only the search needs it, so anyone reproducing the study fetches it first.
+# Lemonade's built-in Qwen3-Coder alias resolves to a different quantization,
+# hence the explicit checkpoint and file.
+PULL_MODEL_COMMAND = (
+    f"lemonade pull {MUTATION_MODEL} \\\n"
+    "  --checkpoint main \\\n"
+    "    unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:"
+    "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \\\n"
+    "  --recipe llamacpp \\\n"
+    "  --label coding"
+)
+
 # rho_multitask_demo._safe_reset() refuses to clear a candidate tree anywhere
 # outside /tmp, so the study has to be produced there and moved afterwards.
 # Media paths in the report are stored relative to its own directory, so the
@@ -51,7 +66,7 @@ def scenario_label(key: str) -> str:
 REGENERATE_COMMAND = (
     "python scripts/rho_multitask_study.py \\\n"
     "  --output-dir /tmp/recorded_results \\\n"
-    "  --model user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M \\\n"
+    f"  --model {MUTATION_MODEL} \\\n"
     "  --generations 2 \\\n"
     "  --proposals 4 \\\n"
     "  --minibatch-size 2 \\\n"
@@ -931,37 +946,60 @@ def held_out_trial(report: dict[str, Any], task: str, index: int = 0) -> int:
     raise KeyError(f"no recorded held-out trial for task {task!r}")
 
 
-# Deployed-policy pass rate over five replays of each validation layout,
-# measured with scripts/rho_replay_scan.py. The deployed candidate scored 1.000
-# on all six layouts in the recorded study, so the report alone cannot rank
-# them; replaying separates layouts that hold up from layouts that depend on a
-# lucky grasp sample.
+# Deployed-policy pass rate over five replays of each validation trial, measured
+# with scripts/rho_replay_scan.py once rho_demo.seed_scene made a trial mean a
+# fixed scene. Object placement is now reproducible; grasp sampling still runs
+# in the perception service and is not, which is where the misses come from.
 REPLAY_PASS_RATES: dict[tuple[str, int], float] = {
-    ("cube_stack", 2): 0.8,
-    ("cube_stack", 3): 1.0,
-    ("cube_stack", 4): 0.6,
+    ("cube_stack", 2): 0.6,
+    ("cube_stack", 3): 0.8,
+    ("cube_stack", 4): 0.4,
     ("cube_lift", 2): 0.8,
-    ("cube_lift", 3): 1.0,
-    ("cube_lift", 4): 1.0,
+    ("cube_lift", 3): 0.4,
+    ("cube_lift", 4): 0.8,
 }
 
 
 def validation_trial(report: dict[str, Any], task: str, index: int | None = None) -> int:
-    """A task's validation layout, most reliable first unless ``index`` is given."""
+    """A task's validation trial, best-measured first unless ``index`` is given."""
     trials = [
         int(entry["trial"])
         for entry in report.get("baseline_validation", [])
         if entry.get("task") == task
     ]
     if not trials:
-        raise KeyError(f"no recorded validation layout for task {task!r}")
+        raise KeyError(f"no recorded validation scenario for task {task!r}")
     if index is not None:
         return trials[index]
     return max(trials, key=lambda trial: REPLAY_PASS_RATES.get((task, trial), 0.0))
 
 
+def rollout_narrator(
+    indent: str = "   ",
+    width: int = 96,
+    writer: Any = print,
+) -> Any:
+    """Build a ``progress`` callback that prints a policy's narration as it runs.
+
+    Pass the result to ``replay_trials(progress=...)``. Simulator setup noise and
+    the evaluator's JSON result line are dropped, leaving the ``print()`` calls
+    the policy itself makes, which arrive as the robot reaches each stage.
+    """
+    import rho_demo
+
+    def narrate(line: str) -> None:
+        if not line.startswith(rho_demo.NARRATION_PREFIX):
+            return
+        text = line[len(rho_demo.NARRATION_PREFIX) :].rstrip()
+        if len(text) > width:
+            text = text[: width - 1] + "…"
+        writer(f"{indent}{text}")
+
+    return narrate
+
+
 def validation_tasks(report: dict[str, Any]) -> list[str]:
-    """Every task with a validation layout, in report order."""
+    """Every task with a validation trial, in report order."""
     ordered: list[str] = []
     for entry in report.get("baseline_validation", []):
         task = str(entry.get("task"))

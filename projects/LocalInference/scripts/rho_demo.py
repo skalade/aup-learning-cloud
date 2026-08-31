@@ -821,12 +821,17 @@ def service_status() -> dict[int, bool]:
 def ensure_services(
     progress: Callable[[str], None] = print,
     *,
-    model: str = MODEL,
+    model: str | None = MODEL,
 ) -> list[Any]:
-    """Start/reuse Lemonade, OWLv2, SAM2, Contact-GraspNet, and PyRoKi."""
+    """Start/reuse Lemonade, OWLv2, SAM2, Contact-GraspNet, and PyRoKi.
+
+    Pass ``model=None`` to start only the perception and control stack. A
+    caller replaying frozen policies never reaches a language model, so
+    loading one costs startup time and nothing else.
+    """
     from capx_demo import SERVICE_LOG, ensure_lemonade, quiet_output
 
-    lemonade_seconds = ensure_lemonade(model, progress=progress)
+    lemonade_seconds = ensure_lemonade(model, progress=progress) if model else 0.0
     started = time.monotonic()
     old_cwd = Path.cwd()
     try:
@@ -866,7 +871,11 @@ def ensure_services(
         robotics_seconds=robotics_seconds,
         total_seconds=lemonade_seconds + robotics_seconds,
     )
-    progress(f"Services ready · LLM {lemonade_seconds:.1f}s · robotics {robotics_seconds:.1f}s · details {SERVICE_LOG}")
+    llm_note = f"LLM {lemonade_seconds:.1f}s" if model else "no LLM"
+    progress(
+        f"Services ready · {llm_note} · robotics {robotics_seconds:.1f}s"
+        f" · details {SERVICE_LOG}"
+    )
     return servers
 
 
@@ -1070,6 +1079,61 @@ def _feedback_text(
     return "\n\n".join(parts)
 
 
+def seed_scene(env: Any, seed: int) -> int:
+    """Make one trial id mean one scene, and report how many generators moved.
+
+    Robosuite draws object placements from a Generator it builds when the
+    environment is constructed, and CaP-X constructs it without a seed. The gym
+    wrapper's ``reset(seed=...)`` only touches the legacy global ``np.random``,
+    which the placement sampler never reads, so the same trial otherwise yields
+    different cube positions on every evaluation. The sampler holds a reference
+    to the Generator, so reseed it in place instead of replacing it.
+    """
+    import numpy as np
+
+    low_level = getattr(env, "low_level_env", None)
+    holders = [env, low_level, getattr(low_level, "robosuite_env", None)]
+    reseeded = 0
+    for holder in holders:
+        for attribute in ("rng", "_rng"):
+            generator = getattr(holder, attribute, None) if holder is not None else None
+            if isinstance(generator, np.random.Generator):
+                generator.bit_generator.state = np.random.default_rng(
+                    seed
+                ).bit_generator.state
+                reseeded += 1
+    np.random.seed(seed)
+    return reseeded
+
+
+NARRATION_PREFIX = "RHO_NARRATION "
+
+
+class _NarrationTee(io.StringIO):
+    """Buffer the policy's stdout while mirroring finished lines to ``sink``.
+
+    CaP-X tees sandbox ``print()`` calls into whatever ``sys.stdout`` is bound to
+    at the time, and ``_live_evaluation`` binds that to a buffer, so a replay is
+    silent from outside the worker. Marking each line lets the parent process
+    separate the policy's own narration from simulator setup noise and from the
+    single JSON result line.
+    """
+
+    def __init__(self, sink: Any) -> None:
+        super().__init__()
+        self._sink = sink
+        self._pending = ""
+
+    def write(self, text: str) -> int:
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            if line.strip():
+                self._sink.write(f"{NARRATION_PREFIX}{line}\n")
+        self._sink.flush()
+        return super().write(text)
+
+
 def _live_evaluation(
     candidate_root: Path,
     split: str,
@@ -1102,12 +1166,14 @@ def _live_evaluation(
         env_factory, _, _ = _load_config(args)
         env = instantiate(env_factory)
         trial = _trial_id(candidate_root, split, example_id)
+        seed_scene(env, trial)
         env.reset(options={"trial": trial}, seed=trial)
 
         if capture:
             env.enable_video_capture()
         program = (candidate_root / policy_path).read_text()
-        captured_stdout = io.StringIO()
+        narrate = os.environ.get("RHO_LIVE_NARRATION") == "1"
+        captured_stdout = _NarrationTee(sys.stdout) if narrate else io.StringIO()
         captured_stderr = io.StringIO()
         try:
             with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
@@ -1232,8 +1298,14 @@ def score_candidate(
     timeout_seconds: float = EVALUATION_TIMEOUT,
     config_path: str = CONFIG_PATH,
     policy_path: str = "solver/program.py",
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate one layout in a killable child without modifying the candidate."""
+    """Evaluate one layout in a killable child without modifying the candidate.
+
+    ``progress`` receives each line the policy writes as it is written, which is
+    how a caller watches a frozen repository work rather than waiting on a
+    silent subprocess.
+    """
     candidate_root = Path(candidate_root).resolve()
     if trial is not None and trial < 0:
         raise ValueError("trial must be non-negative")
@@ -1242,6 +1314,10 @@ def score_candidate(
     worker_env["RHO_VIDEO_ROOT"] = str(VIDEO_ROOT)
     if trial is not None:
         worker_env["RHO_TRIAL_ID"] = str(trial)
+    if progress is not None:
+        # Only a caller that is watching pays for the extra stdout traffic; the
+        # HELIX evaluation path reads execution_tail and stays untouched.
+        worker_env["RHO_LIVE_NARRATION"] = "1"
     worker = run_bounded(
         [
             str(CAPX_PYTHON if CAPX_PYTHON.exists() else Path(sys.executable)),
@@ -1257,6 +1333,7 @@ def score_candidate(
         cwd=candidate_root,
         timeout_seconds=timeout_seconds,
         env=worker_env,
+        progress=progress,
     )
     if worker.timed_out:
         return {

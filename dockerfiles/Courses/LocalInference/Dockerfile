@@ -174,7 +174,12 @@ ENV LEMONADE_CACHE=/opt/lemonade-cache/lemonade \
 # only the quantizations Lemonade's built-in aliases use; pulling each complete
 # GGUF repository would include many redundant quantizations.
 # Downloaded as jovyan so the weights are owned correctly on creation. A later
-# `chown -R` over this tree would copy all ~29 GB into an extra layer.
+# `chown -R` over this tree would copy all ~10 GB into an extra layer.
+#
+# The Qwen3-Coder-30B mutation model is deliberately absent. Notebook 4 replays
+# a recorded evolution run and never calls a language model, so caching another
+# 18 GB would serve one opt-in code path. The notebook prints the `lemonade pull`
+# command that fetches and registers it for anyone reproducing the full sweep.
 RUN install -d -o jovyan -g 100 \
       /opt/lemonade-cache "${LEMONADE_CACHE}" "${LEMONADE_HF_HOME}" \
     && runuser -u jovyan -- env HF_HOME="${LEMONADE_HF_HOME}" \
@@ -192,48 +197,10 @@ models = {
         "gemma-4-E4B-it-Q4_K_M.gguf",
         "mmproj-F16.gguf",
     ],
-    "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF": [
-        "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-    ],
 }
 for repository, files in models.items():
     snapshot_download(repository, allow_patterns=files)
 PY
-
-# Lemonade's built-in Qwen3-Coder alias currently selects a different
-# quantization. Register the workshop-proven Q4_K_M file under an explicit,
-# stable loader name. Lemonade loads
-# user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M; its OpenAI endpoint exposes the
-# corresponding OpenCode id without the user. registry prefix.
-RUN set -euo pipefail; \
-    export HF_HOME="${LEMONADE_HF_HOME}"; \
-    export XDG_RUNTIME_DIR=/tmp/lemonade-build-runtime; \
-    mkdir -p "${XDG_RUNTIME_DIR}"; \
-    chmod 700 "${XDG_RUNTIME_DIR}"; \
-    lemond "${LEMONADE_CACHE}" > /tmp/lemond-build.log 2>&1 & \
-    LEMOND_PID=$!; \
-    trap 'kill "${LEMOND_PID}" 2>/dev/null || true' EXIT; \
-    for _ in $(seq 1 60); do \
-      lemonade status >/dev/null 2>&1 && break; \
-      sleep 1; \
-    done; \
-    lemonade status >/dev/null 2>&1 \
-    || { printf '%s\n' "lemond failed during Qwen registration:" >&2; \
-         tail -n 100 /tmp/lemond-build.log >&2; exit 1; }; \
-    lemonade pull user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M \
-      --checkpoint main \
-        unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
-      --recipe llamacpp \
-      --label coding; \
-    kill "${LEMOND_PID}"; \
-    wait "${LEMOND_PID}" || true; \
-    trap - EXIT; \
-    rm -rf "${XDG_RUNTIME_DIR}" /tmp/lemond-build.log; \
-    : "lemond runs as root and drops .lemonade_registry.json beside the weights" \
-      "under LEMONADE_HF_HOME, so the sweep covers the whole cache rather than" \
-      "just LEMONADE_CACHE. Only root-owned files are touched, and they were" \
-      "written in this layer, so nothing is copied up."; \
-    find /opt/lemonade-cache -user root -exec chown jovyan:100 {} +
 
 # ---------------------------------------------------------------------------
 # CaP-X (Code-as-Policies eXtended) - the code-generating manipulation agent

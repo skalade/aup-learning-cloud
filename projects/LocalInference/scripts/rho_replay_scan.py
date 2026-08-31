@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-"""Replay the seed and deployed repositories over a study's validation layouts.
+"""Replay the seed and deployed repositories over a study's validation scenarios.
 
-A single rollout moves enough that one pass settles nothing: grasp sampling is
-stochastic, so the same frozen policy can solve a layout once and miss it the
-next time. This replays every validation layout ``--reps`` times and reports a
-pass rate per layout, which is what ``rho_report.validation_trial`` uses to pick
-the layout shown in the notebook's live comparison.
+A single rollout settles nothing. ``rho_demo.seed_scene`` pins object placement
+to the trial id, but grasp sampling runs in the perception service and is
+redrawn every time, so the same frozen policy can solve a trial once and miss it
+the next. This replays every validation trial ``--reps`` times and reports a
+pass rate per trial, which is what ``rho_report.REPLAY_PASS_RATES`` records and
+``validation_trial`` uses to pick the trial the notebook replays live.
 
     python scripts/rho_replay_scan.py --reps 5
 """
@@ -64,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.recorded_root
     repos = {"seed": root / "repos" / "seed", "deployed": root / "repos" / "selected"}
 
-    rho_demo.ensure_services(model=rho_demo.DEFAULT_RHO_MODEL)
+    rho_demo.ensure_services(model=None)
     rho_demo.VIDEO_ROOT = args.video_root
 
     report = rho_report.load_report(root)

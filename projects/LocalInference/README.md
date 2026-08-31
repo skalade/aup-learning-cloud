@@ -16,35 +16,63 @@ Notebook 4 is built for a 15–20 minute guided session:
 | Section | Content | Compute |
 | --- | --- | --- |
 | The experiment | Editable surface, `helix.toml`, evaluator boundary | pre-rendered |
-| One generation, live | A single mutation end to end | opt-in, several minutes |
+| Running a full evolution | Printed commands to fetch the model and reproduce the study | printed, not run |
 | Recorded run | Two-generation, two-task Qwen3-Coder evolution | pre-rendered |
 | Start the robot services | OWLv2, SAM2, Contact-GraspNet, PyRoKi | live, ~10 s |
-| Watch both policies run | Seed vs deployed, one layout per task | **live, ~55 s** |
+| Watch both policies run | Seed vs deployed, one trial per task | **live, ~55 s** |
 
-The seed-vs-deployed replay is the only section that runs live by default, and
-it executes frozen Python against the robot services with no model in the
-control loop. The recorded run supplies the search-progress plot, the lineage
-and gate decisions, and the deployed diff split per file.
+The seed-vs-deployed replay is the only section that runs anything, and it
+executes frozen Python against the robot services with no model in the control
+loop, so the services cell passes `model=None` and starts no model server. The
+recorded run supplies the search-progress plot, the lineage and gate decisions,
+and the deployed diff split per file.
 
-Every score the notebook shows comes from the six validation layouts the search
+Both policies narrate themselves during the replay. `rho_demo` marks each line
+the sandbox prints and `rho_report.rollout_narrator()` forwards it, so the
+output arrives as the robot reaches each stage instead of appearing at the end.
+The seed stops mid-task where it raises; the deployed policy runs on through
+placement and release.
+
+The 30B mutation model is **not** in the image. Notebook 4 never calls a
+language model, so caching 18 GB for one opt-in path is not worth it. The
+notebook prints the `lemonade pull` command that fetches and registers it, next
+to the study command it feeds.
+
+Every score the notebook shows comes from the six validation trials the search
 optimized against, which keeps the session short at the cost of saying nothing
 about generalization. The notebook states that limit where it reports the
 numbers and points at the deployed repository for anyone who wants to replay it
-on layouts the search never saw.
+on trials the search never saw.
 
-The appendix is off by default (`RUN_APPENDIX = False`). Its `helix.toml`
-objective names the defect so Gemma E2B can land one accepted mutation inside a
-live session, so it demonstrates the loop's mechanics rather than the agent's
-ability to diagnose. `rho_demo.DEFAULT_GUIDANCE_DISCLOSURE` carries that caveat
-and the notebook prints it before the run.
+### Reproducibility of a trial
+
+`rho_demo.seed_scene()` reseeds the robosuite placement generator in place from
+the trial id before every reset, so one trial now means one scene. Robosuite
+builds that generator when the environment is constructed and CaP-X passes no
+seed, while the gym wrapper's `reset(seed=...)` only touches the legacy global
+`np.random` that the placement sampler never reads — without the fix, the same
+trial drew different object positions on every evaluation.
+
+Grasp sampling still varies, because it runs in the perception service rather
+than the evaluation worker. Replayed five times on each of the six validation
+trials, the deployed policy solves 19 of 30 and the seed 0 of 30. The recorded
+study predates the seeding fix, so each of its per-trial scores is a single
+draw; `scripts/rho_replay_scan.py` reproduces the repeated measurement.
 
 ## Generating notebook 4's recorded assets
 
 **`recorded_results/` is not committed.** Produce it before building the course
 image, or the recorded half of notebook 4 has nothing to read. Run this inside
-the LocalInference image on a machine with the GPU:
+the LocalInference image on a machine with the GPU. The mutation model is not
+baked in, so fetch it first:
 
 ```bash
+lemonade pull user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M \
+  --checkpoint main \
+    unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
+  --recipe llamacpp \
+  --label coding
+
 python /ryzers/notebooks/scripts/rho_multitask_study.py \
   --output-dir /ryzers/notebooks/recorded_results \
   --model user.Qwen3-Coder-30B-A3B-Instruct-Q4_K_M \
@@ -65,7 +93,7 @@ Notebook 4 needs only two things out of that run:
 - `repos/seed/` and `repos/selected/` — the two policy repositories the live
   replay cell runs
 
-The study also writes `videos/` and replays a set of layouts the search never
+The study also writes `videos/` and replays a set of trials the search never
 sampled, controlled by `--hidden-repeats`. The notebook renders neither, because
 it replays both policies live instead, so delete `videos/` before committing:
 it is the only large thing the study produces, and this repository has no Git
@@ -131,15 +159,12 @@ Measured on the workshop Strix Halo GPU:
   the notebook needs them. Run it early if you would rather pay the cost before
   the session; it is idempotent and the later cell will reuse what is running.
 - RHO seed-vs-deployed replay: four rollouts, two per task, 10 to 16 seconds
-  each. This is the only live compute in the guided path. The seed crashes every
-  time; measured five times on each of the six validation layouts the deployed
-  policy solved 26 of 30, so budget for the occasional miss rather than treating
+  each. This is the only live compute in the notebook. The seed crashes every
+  time; measured five times on each of the six validation trials the deployed
+  policy solved 19 of 30, so budget for the occasional miss rather than treating
   it as a failure. `scripts/rho_replay_scan.py` reproduces those pass rates, and
-  `rho_report.validation_trial` uses them to show the layouts that ran 5 for 5.
+  `rho_report.validation_trial` uses them to pick the trial shown per task.
 - RHO recorded run: reads `recorded_results/` and renders immediately.
-- RHO one-generation-live cell: allow 4–8 minutes for four simulator
-  evaluations and one bounded OpenCode mutation. Off by default, and it starts
-  the services itself when enabled.
 
 Environment checks:
 
