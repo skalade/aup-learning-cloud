@@ -13,4 +13,5 @@ rm -rf course_data/outputs course_data/.ipynb_checkpoints
 find course_data -name __pycache__ -type d -prune -exec rm -rf {} +
 
 docker build ${BASE_IMAGE:+--build-arg BASE_IMAGE="$BASE_IMAGE"} \
+  ${HOST_RENDER_GID:+--build-arg HOST_RENDER_GID="$HOST_RENDER_GID"} \
   -t ghcr.io/amdresearch/auplc-localinference:latest .

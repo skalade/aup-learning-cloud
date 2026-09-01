@@ -579,9 +579,18 @@ RUN apt-get update \
 
 WORKDIR /ryzers
 
+# Nodes carrying the pinned amdgpu-insecure-instinct-udev-rules package expose
+# /dev/kfd and /dev/dri/renderD* as 0666 and need no group to reach ROCm. On a
+# node still at the distro default those stay 0660 root:render, and the render
+# GID is assigned per host, so it cannot be derived inside the image. Joining it
+# by number keeps ROCm reachable there; override to match the target fleet.
+ARG HOST_RENDER_GID=992
+
 RUN getent group audio >/dev/null || groupadd audio \
     && getent group kvm >/dev/null || groupadd kvm \
-    && usermod -aG audio,kvm jovyan \
+    && { getent group "${HOST_RENDER_GID}" >/dev/null \
+         || groupadd --gid "${HOST_RENDER_GID}" hostrender; } \
+    && usermod -aG "audio,kvm,$(getent group "${HOST_RENDER_GID}" | cut -d: -f1)" jovyan \
     && install -d -o jovyan -g 100 \
       /home/jovyan/.cache \
       /home/jovyan/.cache/huggingface \
