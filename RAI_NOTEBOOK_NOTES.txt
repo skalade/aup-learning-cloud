@@ -1,0 +1,80 @@
+How it works
+The problem the old design had
+The demo has four moving parts: an O3DE simulation, a ROS 2 stack (MoveIt + perception), the RAI agent, and Lemonade serving the model. Previously a shell script started weston and web_video_server, then ran Streamlit in the foreground; Streamlit's process launched the simulation and built the agent. The notebook's only job was to print a link to /proxy/8501/.
+
+So the notebook and the demo were separate processes that shared nothing. To move the UI into a cell, the kernel has to become the process that owns the simulation and the agent.
+
+Headless rendering (this part already existed)
+O3DE renders through Vulkan, which needs a presentable surface. Xvfb can't provide one — without DRI3 the only presentable device is llvmpipe, i.e. software rendering. The existing script solves this with Weston in headless mode plus Xwayland: Weston hands the X server the real /dev/dri render node, so the iGPU does the rendering with no monitor attached. Weston prints xserver listening on display :N to its log, and the script greps that out to learn $DISPLAY.
+
+I didn't change any of that. What I changed is who gets to use it.
+
+--infra-only: handing the display to the kernel
+The script used to end with streamlit run ... in the foreground, and a trap cleanup EXIT that killed weston and the video server when that exited. --infra-only does steps 1–3 and then:
+
+
+trap - EXIT                 # stop cleanup from firing
+echo "DISPLAY=$DISPLAY"     # report the display we found
+exit 0
+Clearing the trap is the whole trick. Weston, web_video_server and the watchdog were all started with &, so when the script exits they're orphaned onto PID 1 and keep running. The shell goes away; the infrastructure doesn't.
+
+start_infrastructure() runs that with subprocess.run(capture_output=True), parses DISPLAY= out of stdout, and does os.environ["DISPLAY"] = .... This is why the kernel needs it: initialize_o3de() later calls o3de.init_simulation(), which launches the O3DE process as a child of the kernel. It inherits the kernel's environment, so DISPLAY has to be set in the kernel before that call.
+
+That's also where the pipe bug lived. The watchdog subshell inherited the script's stdout, so capture_output=True would have waited for the watchdog to exit — forever. Redirecting the subshell to the log file fixed it.
+
+Getting the camera into a cell
+web_video_server subscribes to /color_image5 and serves it as MJPEG on port 8080. The Streamlit page had the browser fetch that through jupyter-server-proxy.
+
+The notebook version inverts it. A daemon thread in the kernel opens one long-lived HTTP connection to localhost:8080/stream, and splits the byte stream on JPEG frame markers — \xff\xd8 starts a frame, \xff\xd9 ends it:
+
+
+start, end = buf.find(b"\xff\xd8"), buf.find(b"\xff\xd9")
+frame, buf = buf[start : end + 2], buf[end + 2 :]
+...
+self.view.value = frame          # ipywidgets.Image
+Assigning to Image.value sends those bytes over the kernel↔browser websocket that Jupyter already maintains. No proxy, no second connection, nothing for the browser to open. Throttled to 6 fps (~27 KB/frame at 640×360 q70, so ~160 KB/s).
+
+One connection, not polling. Each /snapshot request creates and destroys a ROS subscriber; doing that per frame churns subscribers and eventually wedges the server. That's also why the reconnect loop matters — the stream is empty until O3DE renders its first frame, so an empty read means "wait", not "fail".
+
+Threading
+agent.invoke() blocks for minutes, so it runs on a worker thread and the camera runs on its own. Two consequences shaped the code:
+
+Widget updates from threads use Output.append_stdout() and direct .value assignment. with output: does not work — output capture is bound to the thread that enters the context, so writes from a worker vanish.
+Re-entrancy is prevented by disabling the input widgets while a worker runs, with _busy() checking self._worker.is_alive(). That check is also why _reset_history() had to be split out of _on_clear(): the scene-change worker calling _on_clear() would see itself as busy and silently do nothing.
+Two ordering constraints that bite
+rclpy before torch. import torch followed by rclpy.init() aborts the process with free(): invalid size — torch's bundled C++ runtime corrupts the heap for rcl's init. I bisected it to exactly that pair. So notebook_demo.py opens with import rclpy; rclpy.init() before any import that reaches torch (which rai_perception does). RAI's connector then skips its own init because it guards with if not rclpy.ok().
+
+Server health before topic health. start_infrastructure() runs before the simulation exists, so /color_image5 doesn't exist yet. Health checks ask for GET / — the topic index, which the server answers from the moment it binds — not for the camera. The same mistake in the watchdog was worse: it would have killed the video server every 15 seconds throughout the multi-minute O3DE startup.
+
+ensure_lemonade: the config.toml trap
+A Python port of lemonade_env.sh — start lemond, load the model, point RAI at it. The subtlety is that RAI resolves its backend in two hops:
+
+
+config.vendor.complex_model  ->  "openai"      (a VENDOR name)
+getattr(config, "openai")    ->  the [openai] section
+Every vendor section has simple_model/complex_model keys, but in [vendor] they hold a vendor name, not a model. A global regex rewrite makes RAI look up a vendor named after your model. _point_openai_at() walks the file section by section and only edits inside [openai].
+
+Startup sequence
+build_demo() runs, in this order and for these reasons:
+
+ensure_lemonade() — the model must be reachable and config.toml correct before the agent is constructed
+start_infrastructure() — sets DISPLAY in the kernel, needed before O3DE launches
+initialize_o3de() — the simulation, MoveIt, perception services, and the starting scene
+create_agent() — imported here rather than at module scope, because manipulation_common reads the config.toml that step 1 just rewrote
+ManipulationDemo(...).display() — widgets
+Supporting reliability fixes
+web_video_server wedges when a stream client vanishes mid-frame — a crashed kernel, a closed tab. It keeps the listen socket, spins at 100% CPU, and ignores SIGTERM because rclcpp's graceful-shutdown handler is wedged along with the node. I watched it happen twice in one session. Cleanup now matches by name with SIGKILL (the recorded VIDEO_PID was the ros2 run wrapper, not the server binary it forks — killing it orphaned the real server, which kept port 8080 and broke the next launch), and a watchdog respawns it. Measured recovery: 20 seconds.
+
+/dev/shm at 2Gi. Containers get 64Mi by default. Fast-DDS allocates its shared-memory transport there and was failing with open_and_lock_file failed, silently falling back to UDP.
+
+
+
+Every tool call the agent made is in result["messages"] — worth reading to see how it got there:
+
+for m in result["messages"]:
+    m.pretty_print()
+If the video comes back empty, the camera stream has usually gone stale after processes were killed (Fast-DDS leaves shared-memory segments behind in /dev/shm). Restart just that node in a terminal:
+
+pkill -9 -f web_video_server   # a wedged server ignores SIGTERM
+setsid ros2 run web_video_server web_video_server --ros-args -p port:=8080 \
+    </dev/null >/tmp/wvs.log 2>&1 &

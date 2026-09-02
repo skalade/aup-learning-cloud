@@ -1,0 +1,300 @@
+## The pieces
+
+Six moving parts, one program.
+
+| Piece | Port | Role |
+| --- | --- | --- |
+| **Local LLM** (Lemonade) | 13305 | writes the Python program |
+| **CaP-Gym environment** (Robosuite 1.5 + MuJoCo) | — | scene, physics, cameras, reward |
+| **OWLv2 server** | 8117 | open-vocabulary detection: `"red cube"` → box + score |
+| **SAM2 server** | 8113 | that box → a pixel-accurate mask |
+| **Contact-GraspNet server** | 8115 | depth + mask → ranked 6-DoF grasp poses |
+| **PyRoKi server** | 8116 | inverse kinematics: end-effector pose → joint angles |
+| **`FrankaControlApi`** | — | the five functions that glue the above into the primitives the model is allowed to call |
+
+Upstream grounds with SAM3 instead, a single model that goes from text straight to masks on port 8114. Its weights are gated on HuggingFace, so this image ships the ungated detect-then-segment pair; nothing else about the framework changes.
+
+Everything GPU-bound runs on ROCm: OWLv2, SAM2 and Contact-GraspNet on ROCm PyTorch, and MuJoCo rendering through EGL on the AMD GPU. PyRoKi is JAX on the CPU, which keeps the GPU free for perception.
+
+`FrankaControlApi` is the seam of the whole system. Its five functions are simultaneously the primitives the generated program calls, the clients that talk to the servers behind them, **and** the source of the API documentation in the prompt — the model reads their docstrings before it writes a line. We will look at all three roles.
+
+==============================================================================
+Cut from the notebook on 2026-08-17, when the setup moved into capx_demo.py
+and the notebook was reshaped to match 03_robot_agents.ipynb.
+Written against the pinned CaP-X commit, so it still runs on the CaP-X
+kernel given `demo = build_eval()`, `env = demo.env` and `api = demo.api`.
+Kept in case any of it is wanted back, as an appendix or a second notebook.
+==============================================================================
+
+--- code ------------------------------------------------------------
+
+# The same five functions, seen from the code side. `functions()` is what gets
+# rendered into the prompt above, and it is also what gets bound as bare names
+# into the namespace the generated program executes in - which is why that
+# program can call goto_pose(...) without importing anything.
+for name, fn in api.functions().items():
+    print(f"{name}{inspect.signature(fn)}")
+
+print()
+print("combined_doc() renders each of those as name + signature + inspect.getdoc(fn):")
+from capx.integrations.base_api import ApiBase
+
+print(inspect.getsource(ApiBase.combined_doc))
+
+### What is *not* in the prompt
+
+No image. No object coordinates. No joint state. With this config the model writes the program blind, from the task text and the API alone — every fact about the actual scene is obtained at runtime, by the program, through the perception servers.
+
+CaP-X can send images, but two switches have to line up: the config's `use_visual_feedback`, and a hardcoded allow-list of models known to accept images. A locally served model is not on that list, so asking for visual feedback silently does nothing until you add it.
+
+--- code ------------------------------------------------------------
+
+from capx.llm.client import VLM_MODELS
+
+print("use_visual_feedback :", config["use_visual_feedback"])
+print("model in VLM_MODELS :", MODEL in VLM_MODELS)
+print("prompt content types:", [p["type"] for p in env._full_prompt[1]["content"]])
+print()
+print("To let a local model see the scene:")
+print('  VLM_MODELS.append(MODEL)   # capx.llm.client')
+print("  and run a config with use_visual_feedback, or one of the *_multiturn_vdm.yaml configs")
+
+## Grounding a noun phrase
+
+`init_owlvit()` and `init_sam2()` return closures, not models. The weights live in the server processes on ports 8117 and 8113; the client PNG-encodes the frame, base64s it, and POSTs it.
+
+Grounding takes two hops here. OWLv2 turns `"red cube"` into scored `[x1, y1, x2, y2]` boxes — a detector, so it says *where*, roughly. SAM2 then takes the best box as a prompt and returns the mask of the thing inside it — pixel-accurate, but only because the box told it where to look. Upstream's SAM3 does both in one model, and needs a HuggingFace token this image cannot assume.
+
+Those two closures are the entire vocabulary the robot has for "which pixels are the red cube".
+
+--- code ------------------------------------------------------------
+
+from capx.integrations.vision import owlvit as owlvit_client
+
+print(inspect.getsource(owlvit_client.init_owlvit))
+
+--- code ------------------------------------------------------------
+
+from capx.integrations.franka.common import (
+    build_segmentation_map_from_sam2,
+    select_instance_from_box,
+)
+from capx.utils.camera_utils import obs_get_rgb
+from capx.utils.visualization_utils import overlay_segmentation_masks
+
+rgb = list(obs_get_rgb(obs).values())[0]
+
+# api.owl_vit_det_fn and api.sam2_seg_fn are the closures the API wired up, and
+# what follows is exactly the pair of calls get_object_pose makes.
+dets = api.owl_vit_det_fn(rgb, texts=[["red cube"]])
+best = max(dets, key=lambda d: d["score"])
+
+print(f"{len(dets)} OWLv2 detections for 'red cube'")
+for d in sorted(dets, key=lambda d: -d["score"])[:5]:
+    box = [round(float(v), 1) for v in d["box"]]
+    print(f"  score={d['score']:.3f}  label={d['label']!r}  box={box}")
+
+# SAM2 segments inside that box; the instance covering most of the box wins
+segmentation = build_segmentation_map_from_sam2(
+    api.sam2_seg_fn, rgb, obs["robot0_robotview"]["images"], box=best["box"]
+)
+instance_idx, _ = select_instance_from_box(segmentation, best["box"])
+mask = np.squeeze(segmentation) == instance_idx
+print(f"\nSAM2 mask: {int(mask.sum())} px (instance {instance_idx})")
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+axes[0].imshow(rgb)
+axes[0].set_title("camera")
+axes[1].imshow(overlay_segmentation_masks(rgb, [mask]))
+axes[1].set_title("OWLv2 box → SAM2 mask: 'red cube'")
+for ax in axes:
+    ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+### From a mask to a pose
+
+A mask is pixels; the arm needs metres. `get_object_pose` bridges the two, and the whole pipeline is worth spelling out because every number the generated program reasons about comes out of it:
+
+1. keep the SAM2 mask of the instance the best OWLv2 box selected, intersected with the pixels where depth is not NaN;
+2. back-project those pixels through the camera intrinsics into a point cloud;
+3. drop statistical outliers (20 neighbours, 2σ) — depth edges bleed onto the background;
+4. fit an oriented bounding box with Open3D;
+5. compose the box transform with the camera extrinsics to land in the robot's frame.
+
+The box gives position, orientation and extent in one shot. The orientation, though, is the orientation of a bounding box fitted to a partial, single-view point cloud — which is why the docstring warns the model not to trust it, and why the task prompt tells it to use the grasp quaternion instead. A caveat that lives in the docstring is a caveat the model actually reads.
+
+--- code ------------------------------------------------------------
+
+red_pos, red_quat, red_ext = api.get_object_pose("red cube", return_bbox_extent=True)
+green_pos, green_quat, green_ext = api.get_object_pose("green cube", return_bbox_extent=True)
+
+print("red   pos", red_pos.round(4), " extent", red_ext.round(4))
+print("green pos", green_pos.round(4), " extent", green_ext.round(4))
+
+# The stacking formula from the task prompt, evaluated on real perception output
+place_z = green_pos[2] + green_ext[2] / 2 + red_ext[2] / 2
+print(f"\nplace_z = {green_pos[2]:.4f} + {green_ext[2] / 2:.4f} + {red_ext[2] / 2:.4f} = {place_z:.4f}")
+
+### Where to grab it
+
+`sample_grasp_pose` sends the same depth image and mask to Contact-GraspNet, which returns a set of 6-DoF grasp poses with scores. The API keeps the best one and pushes it back 12 cm along the gripper's own approach axis, so the requested pose is a standoff the fingers can close from rather than a pose that puts the wrist inside the cube.
+
+The camera never moves and sees one side of the scene, so grasp quality varies with how the cubes happened to land — another reason the same program succeeds on one seed and fails on the next.
+
+--- code ------------------------------------------------------------
+
+grasp_pos, grasp_quat = api.sample_grasp_pose("red cube")
+
+print("grasp position   ", grasp_pos.round(4))
+print("grasp quat (wxyz)", grasp_quat.round(4))
+print("candidates       ", len(low.grasp_scores),
+      "| best score", round(float(low.grasp_scores.max()), 3))
+
+## Inverse kinematics
+
+`goto_pose` is where a pose becomes motion, and it does three things that are easy to miss.
+
+**The TCP offset.** Every pose in this API is a gripper-tip pose, but PyRoKi solves for the `panda_hand` link, 10.7 cm back along the tool axis. `goto_pose` rotates that offset into the requested orientation and adds it before solving. Get this wrong and the arm consistently overshoots into the table.
+
+**`z_approach`.** When non-zero, the function solves and executes *twice*: once at a standoff along the gripper's local −Z, then once at the target. That is a two-waypoint approach, not a hint — and it is why the task prompt insists on `z_approach=0.1` for every grasp and every place.
+
+**`prev_cfg`.** The first solve of an episode is cold. Every solve after that passes the previous joint configuration back to the solver, which then also penalises joint velocity. Without it, two nearly identical Cartesian targets can come back on opposite IK branches and the elbow flips across the table between waypoints.
+
+--- code ------------------------------------------------------------
+
+print(inspect.getsource(type(api).goto_pose))
+
+--- code ------------------------------------------------------------
+
+# The client is a thin HTTP wrapper - call the IK server the way goto_pose does.
+DOWN_WXYZ = np.array([0.0, 0.0, 1.0, 0.0])  # gripper pointing straight down
+target = np.concatenate([DOWN_WXYZ, red_pos + np.array([0.0, 0.0, 0.15])])
+
+for label in ("cold (JAX is tracing and compiling)", "warm"):
+    t0 = time.time()
+    r = requests.post("http://127.0.0.1:8116/ik",
+                      json={"target_pose_wxyz_xyz": target.tolist(), "prev_cfg": None},
+                      timeout=120)
+    r.raise_for_status()
+    cfg = np.array(r.json()["joint_positions"])
+    print(f"{label:<38} {time.time() - t0:6.2f}s")
+
+print("\nsolution      ", cfg.round(3))
+print("arm joints    ", cfg[:-1].round(3), "  <- goto_pose sends cfg[:-1] to the controller")
+
+### What the solver is actually solving
+
+There is no closed-form step here. The server poses IK as a nonlinear least-squares problem over the joint vector and hands it to `jaxls`:
+
+- a **pose cost** with an analytic Jacobian, weighting position 5× more than orientation (`pos_weight=50`, `ori_weight=10`) — reaching the point matters more than the exact wrist roll;
+- a **joint limit constraint**, on a URDF whose limits have already been tightened by 0.15 rad so solutions do not sit exactly on a hard stop;
+- and, when `prev_cfg` is supplied, a **velocity cost** penalising any joint that would exceed its velocity limit over a 0.2 s step.
+
+Levenberg–Marquardt with a dense Cholesky solve, JIT-compiled by JAX on the first call — that is the compile pause you just timed, paid once per server process and never again. It runs on the CPU, deliberately, because the GPU is busy holding OWLv2, SAM2 and Contact-GraspNet.
+
+One consequence is worth internalising: **least squares always returns an answer.** Ask for a pose outside the workspace and you get the joint configuration that comes closest, with no error and no flag. The arm moves somewhere reasonable-looking and the grasp misses. When a generated program fails for no visible reason, an unreachable target is the first thing to suspect.
+
+--- code ------------------------------------------------------------
+
+# This runs inside the PyRoKi server process; here it is as source.
+from capx.integrations.motion.pyroki_snippets import _solve_ik as ik_snippet
+
+print(inspect.getsource(ik_snippet._solve_ik_jax))
+
+--- code ------------------------------------------------------------
+
+class IKRecorder:
+    """Wrap FrankaControlApi.ik_solve_fn so every solve is logged.
+
+    goto_pose holds the client as a plain attribute, so swapping it out
+    intercepts every IK request the generated program makes - including the
+    extra one each z_approach silently adds.
+    """
+
+    def __init__(self, api):
+        self.api = api
+        self.calls: list[dict] = []
+        self._original = api.ik_solve_fn
+
+    def __enter__(self):
+        def recording(target_pose_wxyz_xyz, prev_cfg=None):
+            t0 = time.time()
+            cfg = self._original(target_pose_wxyz_xyz, prev_cfg)
+            pose = np.asarray(target_pose_wxyz_xyz, dtype=float)
+            self.calls.append({
+                "quat_wxyz": pose[:4],
+                "xyz": pose[4:],
+                "warm_start": prev_cfg is not None,
+                "joints": np.asarray(cfg, dtype=float)[:-1],
+                "ms": (time.time() - t0) * 1e3,
+            })
+            return cfg
+
+        self.api.ik_solve_fn = recording
+        return self
+
+    def __exit__(self, *exc):
+        self.api.ik_solve_fn = self._original
+        return False
+
+
+print("IK recorder ready")
+
+### The IK the program actually asked for
+
+Below is every solve the run above triggered, in order. Read it as the program's trajectory in Cartesian space: descents where only Z changes, the doubled entries that `z_approach` inserts, and the cold first solve followed by warm-started ones.
+
+--- code ------------------------------------------------------------
+
+print(f"{'#':>2}  {'target xyz (m)':<26} {'quat wxyz':<30} {'warm':<5} {'ms':>7}  joints (rad)")
+print("-" * 118)
+for i, c in enumerate(ik.calls):
+    xyz = np.array2string(c["xyz"], precision=3, suppress_small=True)
+    quat = np.array2string(c["quat_wxyz"], precision=3, suppress_small=True)
+    joints = np.array2string(c["joints"], precision=2, suppress_small=True)
+    print(f"{i:>2}  {xyz:<26} {quat:<30} {str(c['warm_start']):<5} {c['ms']:7.1f}  {joints}")
+
+print(f"\n{len(ik.calls)} IK solves for {program.count('goto_pose(')} goto_pose calls in the program")
+
+### Read the artifacts
+
+Every trial gets a directory whose *name* carries the result — sandbox return code, reward, and whether the task completed — plus the generated program, the raw model response, the prompt, and an MP4 of the episode. The run also inserts the model name into the output path, so evaluating a second model does not overwrite the first.
+
+--- code ------------------------------------------------------------
+
+import re
+
+# _setup_output_dir splices the model name in before the last path component
+RESULT_DIR = EVAL_DIR.parent / MODEL.replace("/", "_") / EVAL_DIR.name
+print("results in", RESULT_DIR, "\n")
+print((RESULT_DIR / "summaries.txt").read_text())
+
+pattern = re.compile(r"trial_(\d+)_sandboxrc_(\d+)_reward_([\d.]+)_taskcompleted_(\d)")
+trials = []
+for d in sorted(RESULT_DIR.glob("trial_*")):
+    m = pattern.match(d.name)
+    if m:
+        trials.append({"trial": int(m[1]), "rc": int(m[2]), "reward": float(m[3]),
+                       "done": bool(int(m[4])), "dir": d})
+
+print(f"{'trial':>5} {'sandbox':>8} {'reward':>7} {'solved':>7}")
+for t in trials:
+    print(f"{t['trial']:>5} {'ok' if t['rc'] == 0 else 'error':>8} {t['reward']:>7.3f} {str(t['done']):>7}")
+
+if trials:
+    solved = sum(t["done"] for t in trials)
+    print(f"\nsuccess rate: {solved}/{len(trials)}   mean reward: {np.mean([t['reward'] for t in trials]):.3f}")
+
+--- code ------------------------------------------------------------
+
+# The best trial: the program that got furthest, and the episode it produced
+if trials:
+    best = max(trials, key=lambda t: t["reward"])
+    print(f"===== trial {best['trial']}, reward {best['reward']:.3f} =====\n")
+    print((best["dir"] / "code.py").read_text())
+
+    video = next(iter(sorted(best["dir"].glob("video_combined*.mp4"))), None)
+    if video:
+        display(Video(str(video), embed=True, width=640))
+
