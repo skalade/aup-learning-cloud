@@ -51,6 +51,7 @@ LLAMA_METRICS_URL = os.environ.get("LLAMA_METRICS_URL", "http://127.0.0.1:8001/m
 SERVICE_LOG = Path(os.environ.get("CAPX_SERVICE_LOG", "/tmp/capx-services.log"))
 
 WORK = Path(os.environ.get("CAPX_WORK", "/tmp/capx_notebook"))
+WORK.mkdir(parents=True, exist_ok=True)
 
 TRIAL_DIR = re.compile(r"trial_(\d+)_sandboxrc_(\d+)_reward_([\d.]+)_taskcompleted_(\d)")
 
@@ -269,6 +270,61 @@ def show_trial_grid(trials: list[dict], width: int = 240, progress=print) -> Non
     _show_video_grid(entries, width, progress)
 
 
+def show_comparison_grid(
+    labeled_rollouts: list[tuple[str, dict]],
+    width: int = 320,
+    progress=print,
+) -> None:
+    """Display labeled rollouts on one row for a before/after comparison.
+
+    ``_show_video_grid`` balances entries over two rows, which stacks a two-clip
+    comparison vertically. Side by side is the whole point here.
+    """
+    from IPython.display import HTML, display
+
+    thumbs = WORK / "thumbs"
+    thumbs.mkdir(parents=True, exist_ok=True)
+
+    figures = []
+    for label, rollout in labeled_rollouts:
+        raw_video = rollout.get("video")
+        video = Path(raw_video) if raw_video else None
+        if video is not None and not video.is_file():
+            video = None
+        reward = float(rollout.get("reward") or 0.0)
+        solved = bool(rollout.get("task_completed"))
+        caption = (
+            f"<b>{label}</b><br>reward {reward:.3f}"
+            f" · {'solved' if solved else 'not solved'}"
+        )
+        if video is None:
+            figures.append(
+                f'<figure style="margin:0;text-align:center;font:12px/1.4 sans-serif">'
+                f'<div style="width:{width}px;height:{width * 3 // 4}px;display:flex;'
+                f"align-items:center;justify-content:center;border:1px dashed currentColor;"
+                f'opacity:.5">no video</div><figcaption>{caption}</figcaption></figure>'
+            )
+            continue
+        safe = re.sub(r"[^0-9A-Za-z_-]+", "_", str(label))
+        source = _scaled(video, thumbs / f"compare_{safe}.mp4", width)
+        data = base64.b64encode(source.read_bytes()).decode()
+        figures.append(
+            f'<figure style="margin:0;text-align:center;font:12px/1.4 sans-serif">'
+            f'<video src="data:video/mp4;base64,{data}" width="{width}" '
+            f"controls loop muted playsinline></video>"
+            f"<figcaption>{caption}</figcaption></figure>"
+        )
+
+    display(
+        HTML(
+            '<div style="display:flex;flex-wrap:wrap;gap:16px;'
+            'justify-content:center;align-items:flex-start">'
+            + "".join(figures)
+            + "</div>"
+        )
+    )
+
+
 def show_rollout_grid(rollouts: list[dict], width: int = 240, progress=print) -> None:
     """Display RHO rollout videos across seeds."""
     entries = []
@@ -316,6 +372,28 @@ def show_paired_rollout_grid(
                 )
             )
     _show_video_grid(entries, width, progress)
+
+
+# Gemma sometimes emits a control token straight into the fenced code block,
+# most often appended to the final line as `open_gripper()<unused56>`. It is a
+# decoding artifact rather than anything the model "wrote", but it reaches the
+# sandbox as a SyntaxError and costs the whole rollout. CaP-X's _extract_code()
+# only strips Markdown fences, so the cleanup happens here.
+SPECIAL_TOKEN = re.compile(
+    r"<unused\d+>|</?s>|<pad>|<eos>|<bos>|<end_of_turn>|<start_of_turn>"
+)
+
+
+def clean_program(program: str) -> tuple[str, list[str]]:
+    """Strip stray model control tokens from generated code.
+
+    Returns the cleaned program and the tokens removed, so a caller can show
+    that the repair happened instead of hiding it.
+    """
+    found = SPECIAL_TOKEN.findall(program)
+    if not found:
+        return program, []
+    return SPECIAL_TOKEN.sub("", program).rstrip(), found
 
 
 def analyze_program(program: str) -> dict:
