@@ -284,6 +284,7 @@ custom:
       Course-DL: "ghcr.io/amdresearch/auplc-dl:latest"
       Course-LLM: "ghcr.io/amdresearch/auplc-llm:latest"
       Course-PhySim: "ghcr.io/amdresearch/auplc-physim:latest"
+      Course-Simulation: "ghcr.io/amdresearch/auplc-simulation:latest"
       Course-Finetuning: "ghcr.io/amdresearch/auplc-finetuning:latest"
       Course-LocalInference: "ghcr.io/amdresearch/auplc-localinference:latest"
       # Custom-URL: "ghcr.io/amdresearch/auplc-cv:latest"
@@ -328,6 +329,10 @@ custom:
         memory: "0Gi"
         amd.com/gpu: "1"
       Course-PhySim:
+        cpu: "0"
+        memory: "0Gi"
+        amd.com/gpu: "1"
+      Course-Simulation:
         cpu: "0"
         memory: "0Gi"
         amd.com/gpu: "1"
@@ -431,6 +436,15 @@ custom:
           - strix-halo
         defaultPath: "/opt/workspace/PhySim"
         resourceType: "notebook"
+      Course-Simulation:
+        group: "TEACHING LABS"
+        description: "Simulation Course"
+        subDescription: "Suitable for simulation experiments with GPU"
+        accelerator: "GPU"
+        acceleratorKeys:
+          - strix-halo
+        defaultPath: "/opt/workspace/Simulation"
+        resourceType: "notebook"
       Course-Finetuning:
         group: "ROSCON 2026"
         description: "Fine-tuning on GPUs: from cloud to robot"
@@ -465,6 +479,7 @@ custom:
         - Course-DL
         - Course-LLM
         - Course-PhySim
+        - Course-Simulation
         - Course-Finetuning
         - Course-LocalInference
       official:
@@ -476,6 +491,7 @@ custom:
         - Course-DL
         - Course-LLM
         - Course-PhySim
+        - Course-Simulation
         - Course-Finetuning
         - Course-LocalInference
       AUP:
@@ -483,6 +499,7 @@ custom:
         - Course-DL
         - Course-LLM
         - Course-PhySim
+        - Course-Simulation
         - Course-Finetuning
         - Course-LocalInference
       native-users:
@@ -492,6 +509,7 @@ custom:
         - Course-DL
         - Course-LLM
         - Course-PhySim
+        - Course-Simulation
         - Course-Finetuning
         - Course-LocalInference
         - cpu
@@ -505,6 +523,7 @@ custom:
         - Course-DL
         - Course-LLM
         - Course-PhySim
+        - Course-Simulation
         - Course-Finetuning
         - Course-LocalInference
 
