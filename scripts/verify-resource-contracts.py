@@ -27,6 +27,7 @@ OFFICIAL_RESOURCE_KEYS = (
     "Course-DL",
     "Course-LLM",
     "Course-PhySim",
+    "Course-Simulation",
     "Course-Finetuning",
     "Course-LocalInference",
 )
