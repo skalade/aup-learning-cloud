@@ -8,4 +8,5 @@ cp -r ../../../projects/RLLearning ./course_data
 trap 'rm -rf course_data' EXIT
 
 docker build ${BASE_IMAGE:+--build-arg BASE_IMAGE="$BASE_IMAGE"} \
+  ${HOST_RENDER_GID:+--build-arg HOST_RENDER_GID="$HOST_RENDER_GID"} \
   -t ghcr.io/amdresearch/auplc-rl-learning:latest .

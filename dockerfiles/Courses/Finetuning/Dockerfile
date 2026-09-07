@@ -184,6 +184,16 @@ RUN chown -R jovyan:100 \
       /home/jovyan/outputs \
       /ryzers
 
+# Join the host render group by NUMBER so ROCm (/dev/kfd, /dev/dri/renderD*) is
+# reachable for non-root jovyan whether the image runs under a K8s pod or a plain
+# `docker run`. The render GID is host-assigned and owns those 0660 device nodes,
+# so it cannot be derived inside the image; override HOST_RENDER_GID to match the
+# target fleet (default matches the render GID set by the ROCm ansible role).
+ARG HOST_RENDER_GID=993
+RUN getent group "${HOST_RENDER_GID}" >/dev/null \
+      || groupadd --gid "${HOST_RENDER_GID}" hostrender; \
+    usermod -aG "$(getent group "${HOST_RENDER_GID}" | cut -d: -f1)" jovyan
+
 ENV HOME=/home/jovyan \
     PATH="/opt/train-venv/bin:${PATH}" \
     HF_HOME=/home/jovyan/.cache/huggingface \

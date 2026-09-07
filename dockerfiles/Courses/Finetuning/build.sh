@@ -39,5 +39,6 @@ else
 fi
 
 DOCKER_BUILDKIT=1 docker build ${BASE_IMAGE:+--build-arg BASE_IMAGE="$BASE_IMAGE"} \
+  ${HOST_RENDER_GID:+--build-arg HOST_RENDER_GID="$HOST_RENDER_GID"} \
   ${BUILD_EXTRA[@]+"${BUILD_EXTRA[@]}"} \
   -t ghcr.io/amdresearch/auplc-finetuning:latest .

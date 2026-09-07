@@ -21,6 +21,7 @@
 cp -r ../../../projects/Simulation ./course_data
 
 docker build ${BASE_IMAGE:+--build-arg BASE_IMAGE="$BASE_IMAGE"} \
+  ${HOST_RENDER_GID:+--build-arg HOST_RENDER_GID="$HOST_RENDER_GID"} \
   -t ghcr.io/amdresearch/auplc-simulation:latest .
 
 rm -r course_data
