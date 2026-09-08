@@ -530,7 +530,7 @@ custom:
         accelerator: "GPU"
         acceleratorKeys:
           - strix-halo
-        defaultPath: "/opt/workspace/Simulation"
+        defaultPath: "/ryzers/notebooks"
         resourceType: "notebook"
       Course-Finetuning:
         group: "ROSCON 2026"

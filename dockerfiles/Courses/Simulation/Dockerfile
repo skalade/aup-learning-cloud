@@ -23,10 +23,10 @@ FROM ${BASE_IMAGE}
 
 # Copy related rocm notebooks into the docker
 USER root
-RUN mkdir -p /opt/workspace/Simulation
-COPY ./course_data /opt/workspace/Simulation
+RUN mkdir -p /ryzers/notebooks
+COPY ./course_data /ryzers/notebooks
 
-RUN chown -R jovyan:1000 /opt/workspace
+RUN chown -R jovyan:100 /ryzers
 
 # Join the host render group by NUMBER so ROCm (/dev/kfd, /dev/dri/renderD*) is
 # reachable for non-root jovyan whether the image runs under a K8s pod or a plain
@@ -39,4 +39,4 @@ RUN getent group "${HOST_RENDER_GID}" >/dev/null \
     usermod -aG "$(getent group "${HOST_RENDER_GID}" | cut -d: -f1)" jovyan
 
 USER jovyan
-WORKDIR /opt/workspace/Simulation
+WORKDIR /ryzers/notebooks
