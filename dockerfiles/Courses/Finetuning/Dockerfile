@@ -188,8 +188,8 @@ RUN chown -R jovyan:100 \
 # reachable for non-root jovyan whether the image runs under a K8s pod or a plain
 # `docker run`. The render GID is host-assigned and owns those 0660 device nodes,
 # so it cannot be derived inside the image; override HOST_RENDER_GID to match the
-# target fleet (default matches the render GID set by the ROCm ansible role).
-ARG HOST_RENDER_GID=993
+# target fleet (default 992 matches the render group observed on the AUP host fleet).
+ARG HOST_RENDER_GID=992
 RUN getent group "${HOST_RENDER_GID}" >/dev/null \
       || groupadd --gid "${HOST_RENDER_GID}" hostrender; \
     usermod -aG "$(getent group "${HOST_RENDER_GID}" | cut -d: -f1)" jovyan
