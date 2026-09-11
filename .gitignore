@@ -39,6 +39,9 @@ parts/
 sdist/
 var/
 wheels/
+# Exception: the Simulation course vendors a workshop wheel tracked via git-lfs.
+!projects/Simulation/wheels/
+!projects/Simulation/wheels/*.whl
 share/python-wheels/
 *.egg-info/
 .installed.cfg
