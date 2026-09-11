@@ -26,8 +26,8 @@ RUN mkdir -p /ryzers/notebooks
 COPY ./course_data /ryzers/notebooks
 
 WORKDIR /ryzers/notebooks
-RUN unzip -q PandaPickCube-20260817-150103.zip \
-    && unzip -q PandaPickCube-20260807-131132.zip \
+RUN unzip -q assets/PandaPickCube-20260817-150103.zip -d assets \
+    && unzip -q assets/PandaPickCube-20260807-131132.zip -d assets \
     && chown -R jovyan:100 /ryzers
 
 # Install course packages system-wide as root (see LLM Dockerfile for rationale).

@@ -2,18 +2,18 @@
 
 # ROSCon 2026: RL Learning
 
-PandaPickCube inference demo for ROSCon. Open [`hands-on.ipynb`](hands-on.ipynb) to roll out three Brax PPO checkpoints (weak → improving → strong) and render comparison videos.
+PandaPickCube inference demo for ROSCon. Open [`0_simulation_rl.ipynb`](../0_simulation_rl.ipynb) to roll out three Brax PPO checkpoints (weak → improving → strong) and render comparison videos.
 
 ## Contents
 
 | File | Purpose |
 |------|---------|
-| `hands-on.ipynb` | Main inference notebook (checkpoint progression demo) |
-| `headless_gl.py` | Headless MuJoCo rendering via system Mesa/OSMesa |
+| `../0_simulation_rl.ipynb` | Main inference notebook (checkpoint progression demo) |
+| `assets/headless_gl.py` | Headless MuJoCo rendering via system Mesa/OSMesa |
 | `scripts/render_trajectory.py` | Re-render a saved rollout without rerunning inference |
 | `scripts/render_checkpoint_once.py` | One-off rollout + render for a single checkpoint |
-| `PandaPickCube-20260807-131132.zip` | Early-training checkpoints (demo uses `000008192000`) |
-| `PandaPickCube-20260817-150103.zip` | Mid/final checkpoints (demo uses `000006553600`, `000045875200`) |
+| `assets/PandaPickCube-20260807-131132.zip` | Early-training checkpoints (demo uses `000008192000`) |
+| `assets/PandaPickCube-20260817-150103.zip` | Mid/final checkpoints (demo uses `000006553600`, `000045875200`) |
 
 ## Checkpoint progression
 
@@ -27,7 +27,7 @@ The notebook runs three stages in **demo order** (picked by rollout quality, not
 
 ## Docker image
 
-All dependencies are installed in [`dockerfiles/Courses/RLLearning/Dockerfile`](../../dockerfiles/Courses/RLLearning/Dockerfile): Python packages, headless GL libraries, and both checkpoint archives extracted at build time.
+All dependencies are installed in [`dockerfiles/Courses/RLLearning/Dockerfile`](../../../dockerfiles/Courses/RLLearning/Dockerfile): Python packages, headless GL libraries, and both checkpoint archives extracted at build time.
 
 From a sparse checkout that includes `dockerfiles/Courses/RLLearning` and `dockerfiles/Makefile`:
 
@@ -37,7 +37,7 @@ make -C dockerfiles rl-learning GPU_TARGET=gfx1151
 
 ## Notebook Instructions
 
-Course notebooks are staged at `/ryzers/notebooks` in the image. Open `hands-on.ipynb` there and run the cells in order — no `%pip` or pixi steps in the notebook.
+Course notebooks are staged at `/ryzers/notebooks` in the image. Open `0_simulation_rl.ipynb` there and run the cells in order — no `%pip` or pixi steps in the notebook.
 
 **What you will show the audience**
 

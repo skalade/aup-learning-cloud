@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-off: rollout + render a single Brax checkpoint (same seed as hands-on.ipynb)."""
+"""One-off: rollout + render a single Brax checkpoint (same seed as 0_simulation_rl.ipynb)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "assets"))
 
 from headless_gl import (  # noqa: E402
     build_gl_env,

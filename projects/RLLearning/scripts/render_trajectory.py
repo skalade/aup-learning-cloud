@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "assets"))
 
 from headless_gl import reexec_with_gl_env  # noqa: E402
 
@@ -57,7 +57,7 @@ def render_npz(npz_path: Path, output_path: Path, env_name: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("npz", type=Path, help="trajectory.npz from hands-on.ipynb")
+    parser.add_argument("npz", type=Path, help="trajectory.npz from 0_simulation_rl.ipynb")
     parser.add_argument(
         "-o",
         "--output",
