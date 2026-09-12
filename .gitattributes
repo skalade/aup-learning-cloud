@@ -91,6 +91,6 @@
 # PDFs
 *.pdf    binary
 
-# Large model / wheel artifacts (git-lfs)
-*.whl filter=lfs diff=lfs merge=lfs -text
-*.pt  filter=lfs diff=lfs merge=lfs -text
+# Large model / wheel artifacts (committed directly as binary)
+*.whl binary
+*.pt  binary
