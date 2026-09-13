@@ -624,7 +624,7 @@ def benchmark_scenarios(
         output: list[str] = []
         for line in proc.stdout:
             output.append(line)
-            if verbose:
+            if verbose or ("Trial" in line and "took" in line):
                 progress(line.rstrip())
         proc.wait()
         elapsed = time.monotonic() - started
