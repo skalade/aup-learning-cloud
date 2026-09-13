@@ -31,12 +31,18 @@ RUN chown -R jovyan:100 /ryzers
 # ---------------------------------------------------------------------------
 # ROSCon Humanoid Stairs Workshop (Genesis / Unitree G1) stack.
 #
-# auplc-base ships ROCm 7.13 + torch 2.9.1 on the system Python. This workshop
-# pins ROCm 7.2 + torch 2.12.0 + triton-rocm 3.7.0 + genesis-world 1.4.0 (via the
-# bundled gslab wheel), which cannot coexist with the base torch. It therefore
-# gets an isolated venv (no --system-site-packages) plus its own Jupyter kernel
-# ("gslab ROSCon (ROCm 7.2)"), mirroring the isolated-venv + kernelspec pattern
-# used by the LocalInference course.
+# The gslab wheel needs torch>=2.10 + genesis-world 1.4.0. auplc-base ships
+# torch 2.9.1 (too old for gslab), so the workshop gets an isolated venv (no
+# --system-site-packages) with its own newer torch plus a dedicated Jupyter
+# kernel, mirroring the isolated-venv + kernelspec pattern used by the
+# LocalInference course.
+#
+# The workshop's upstream INSTALL.md pins torch 2.12.0+rocm7.2, but the ROCm
+# kernel driver (KFD) is host-global and the AUP fleet runs ROCm 7.13: a
+# rocm7.2 torch userspace segfaults on first GPU dispatch against a 7.13 driver.
+# So the venv torch MUST match the host ROCm. We install torch 2.10.0+rocm7.13.0
+# from the same gfx1151 wheel index auplc-base uses (repo.amd.com), which both
+# satisfies gslab's >=2.10 floor and matches the host driver.
 # ---------------------------------------------------------------------------
 ENV GSLAB_VENV=/opt/gslab-venv
 
@@ -44,15 +50,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install in INSTALL.md order: torch + triton from the rocm7.2 index FIRST (a
-# pinned --index-url, not --extra-index-url, so a missing +rocm7.2 wheel fails
-# loudly instead of silently pulling a PyPI/CUDA build), then the local gslab
-# wheel + jupyter. Delete the 20 MB wheel in the SAME layer so it is not stranded.
+# Install torch from the host-matched ROCm index FIRST (a pinned --index-url,
+# not --extra-index-url, so a missing +rocm7.13.0 wheel fails loudly instead of
+# silently pulling a PyPI/CUDA build), then the local gslab wheel + jupyter.
+# gslab's unpinned triton-rocm requirement resolves from PyPI in the wheel step.
+# Delete the 20 MB wheel in the SAME layer so it is not stranded.
 RUN /usr/bin/python3 -m venv ${GSLAB_VENV} \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir --upgrade pip \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
-         --index-url https://download.pytorch.org/whl/rocm7.2 \
-         "torch==2.12.0+rocm7.2" "triton-rocm==3.7.0" \
+         --index-url https://repo.amd.com/rocm/whl/gfx1151/ \
+         "torch==2.10.0+rocm7.13.0" \
     && ${GSLAB_VENV}/bin/python -c "import torch; assert torch.version.hip, \
          'gslab venv torch is not a ROCm/HIP build'; \
          print('gslab torch', torch.__version__, 'hip', torch.version.hip)" \
@@ -77,20 +84,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # to set globally: nothing in the base image uses pyglet.
 ENV PYGLET_HEADLESS=1
 
-# Register the gslab-roscon kernelspec. Scrub the inherited ROCm-7.13
-# LD_LIBRARY_PATH so venv-torch loads its own RPATH-bundled ROCm-7.2 libs, then a
-# build-time smoke test (import + HIP-build only, so it passes on a GPU-less
-# builder; the notebook env-check is the real runtime GPU gate).
+# Register the gslab-roscon kernelspec. The venv torch is rocm7.13, matching the
+# host's /opt/rocm/lib (same as auplc-base), so the kernel inherits the container
+# LD_LIBRARY_PATH rather than scrubbing it. Then a build-time smoke test (import +
+# HIP-build only, so it passes on a GPU-less builder; the notebook env-check is
+# the real runtime GPU gate).
 RUN mkdir -p /usr/local/share/jupyter/kernels/gslab-roscon \
     && printf '%s\n' \
       '{' \
       '  "argv": ["/opt/gslab-venv/bin/python", "-m", "ipykernel_launcher", "-f", "{connection_file}"],' \
-      '  "display_name": "gslab ROSCon (ROCm 7.2)",' \
-      '  "language": "python",' \
-      '  "env": { "LD_LIBRARY_PATH": "" }' \
+      '  "display_name": "gslab ROSCon (ROCm 7.13)",' \
+      '  "language": "python"' \
       '}' \
       > /usr/local/share/jupyter/kernels/gslab-roscon/kernel.json \
-    && LD_LIBRARY_PATH="" ${GSLAB_VENV}/bin/python -c \
+    && ${GSLAB_VENV}/bin/python -c \
       "import torch, gslab, genesis; assert torch.version.hip; \
 print('gslab workshop env OK:', torch.__version__, '| genesis', genesis.__version__)"
 
