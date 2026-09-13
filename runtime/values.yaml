@@ -525,7 +525,7 @@ custom:
         resourceType: "notebook"
       Course-Simulation:
         group: "ROSCON 2026"
-        description: "Humanoid locomotion on stairs"
+        description: "Simulation Toolbox"
         subDescription: "Train & eval Unitree G1 on Genesis with ROCm"
         accelerator: "GPU"
         acceleratorKeys:
