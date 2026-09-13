@@ -50,11 +50,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install torch from the host-matched ROCm index FIRST (a pinned --index-url,
-# not --extra-index-url, so a missing +rocm7.13.0 wheel fails loudly instead of
-# silently pulling a PyPI/CUDA build), then the local gslab wheel + jupyter.
-# gslab's unpinned triton-rocm requirement resolves from PyPI in the wheel step.
-# Delete the 20 MB wheel in the SAME layer so it is not stranded.
+# Install torch from the host-matched ROCm index FIRST (a pinned --index-url, not
+# --extra-index-url, so a missing +rocm7.13.0 wheel fails loudly instead of
+# silently pulling a PyPI/CUDA build). torch pulls its matching triton
+# (triton==3.6.0+rocm7.13.0) from that same index.
+#
+# Then install gslab's real deps from PyPI and the wheel itself with --no-deps:
+# gslab's metadata declares a "triton-rocm" requirement that only exists on the
+# rocm7.2 pytorch index (wrong ROCm for this host and unavailable on PyPI). The
+# `triton` module it actually needs is already satisfied by torch's triton above,
+# so we install gslab's genuine deps explicitly and skip its phantom triton-rocm
+# pin. Delete the 20 MB wheel in the SAME layer so it is not stranded.
 RUN /usr/bin/python3 -m venv ${GSLAB_VENV} \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir --upgrade pip \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
@@ -64,8 +70,10 @@ RUN /usr/bin/python3 -m venv ${GSLAB_VENV} \
          'gslab venv torch is not a ROCm/HIP build'; \
          print('gslab torch', torch.__version__, 'hip', torch.version.hip)" \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
-         /ryzers/notebooks/wheels/gslab-0.1.0-py3-none-any.whl \
+         "genesis-world==1.4.0" "rsl-rl-lib>=5.4.0" "tyro>=1.0.13" "wandb>=0.27.2" \
          jupyterlab ipykernel ipywidgets \
+    && ${GSLAB_VENV}/bin/pip install --no-cache-dir --no-deps \
+         /ryzers/notebooks/wheels/gslab-0.1.0-py3-none-any.whl \
     && rm -f /ryzers/notebooks/wheels/gslab-0.1.0-py3-none-any.whl
 
 # Genesis pulls in system OpenGL at import time: pygel3d dlopens libGL.so.1, and
