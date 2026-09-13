@@ -40,9 +40,11 @@ RUN chown -R jovyan:100 /ryzers
 # The workshop's upstream INSTALL.md pins torch 2.12.0+rocm7.2, but the ROCm
 # kernel driver (KFD) is host-global and the AUP fleet runs ROCm 7.13: a
 # rocm7.2 torch userspace segfaults on first GPU dispatch against a 7.13 driver.
-# So the venv torch MUST match the host ROCm. We install torch 2.10.0+rocm7.13.0
+# So the venv torch MUST match the host ROCm. We install torch 2.11.0+rocm7.13.0
 # from the same gfx1151 wheel index auplc-base uses (repo.amd.com), which both
-# satisfies gslab's >=2.10 floor and matches the host driver.
+# satisfies gslab's >=2.10 floor and matches the host driver. (2.11 over the 2.10
+# floor: Genesis 1.4.0 was validated against torch 2.12; 2.11 is the closest
+# host-matched build and 2.10 segfaulted in Genesis' rigid-solver tensor copy.)
 # ---------------------------------------------------------------------------
 ENV GSLAB_VENV=/opt/gslab-venv
 
@@ -65,7 +67,7 @@ RUN /usr/bin/python3 -m venv ${GSLAB_VENV} \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir --upgrade pip \
     && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
          --index-url https://repo.amd.com/rocm/whl/gfx1151/ \
-         "torch==2.10.0+rocm7.13.0" \
+         "torch==2.11.0+rocm7.13.0" \
     && ${GSLAB_VENV}/bin/python -c "import torch; assert torch.version.hip, \
          'gslab venv torch is not a ROCm/HIP build'; \
          print('gslab torch', torch.__version__, 'hip', torch.version.hip)" \
