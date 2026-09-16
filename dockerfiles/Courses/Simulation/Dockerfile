@@ -32,51 +32,54 @@ RUN chown -R jovyan:100 /ryzers
 # ROSCon Humanoid Stairs Workshop (Genesis / Unitree G1) stack.
 #
 # The gslab wheel needs torch>=2.10 + genesis-world 1.4.0. auplc-base ships
-# torch 2.9.1 (too old for gslab), so the workshop gets an isolated venv (no
-# --system-site-packages) with its own newer torch plus a dedicated Jupyter
-# kernel, mirroring the isolated-venv + kernelspec pattern used by the
-# LocalInference course.
+# torch 2.9.1 (too old for gslab), so the workshop gets an isolated venv with its
+# own newer torch plus a dedicated Jupyter kernel, mirroring the isolated-venv +
+# kernelspec pattern used by the LocalInference course. Built with uv (already in
+# the base image) on Python 3.13, exactly as the upstream INSTALL.md prescribes.
 #
-# The workshop's upstream INSTALL.md pins torch 2.12.0+rocm7.2, but the ROCm
-# kernel driver (KFD) is host-global and the AUP fleet runs ROCm 7.13: a
-# rocm7.2 torch userspace segfaults on first GPU dispatch against a 7.13 driver.
-# So the venv torch MUST match the host ROCm. We install torch 2.11.0+rocm7.13.0
-# from the same gfx1151 wheel index auplc-base uses (repo.amd.com), which both
-# satisfies gslab's >=2.10 floor and matches the host driver. (2.11 over the 2.10
-# floor: Genesis 1.4.0 was validated against torch 2.12; 2.11 is the closest
-# host-matched build and 2.10 segfaulted in Genesis' rigid-solver tensor copy.)
+# Two ROCm layers are in play and both must be 7.13 to match the host KFD driver
+# (which is host-global and cannot be isolated per container):
+#   * PyTorch finds the HIP runtime through the pip `rocm_sdk` packages that the
+#     torch==2.11.0+rocm7.13.0 wheel pulls from repo.amd.com/gfx1151.
+#   * Genesis compiles its physics kernels at runtime with `quadrants`, which
+#     needs a classic /opt/rocm layout the pip SDK does not ship: an unversioned
+#     libamdhip64.so alias (for bare-name dlopen) and an ld.lld of LLVM >=19 (its
+#     AMDGPU code objects are v6; lld-18 rejects them). link_rocm_tree.sh builds
+#     that <venv>/rocm tree from the pip SDK and links a good ld.lld (preferring
+#     /opt/rocm/llvm/bin/ld.lld from the base image's system ROCm 7.13).
+#
+# (The previous gslab-0.1.0 bundle was validated for ROCm 7.2; on this 7.13 host
+# quadrants segfaulted JIT-linking kernels. gslab-0.1.2 + the pip ROCm SDK +
+# link_rocm_tree.sh is the upstream rocm7.13 fix.)
 # ---------------------------------------------------------------------------
 ENV GSLAB_VENV=/opt/gslab-venv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install torch from the host-matched ROCm index FIRST (a pinned --index-url, not
-# --extra-index-url, so a missing +rocm7.13.0 wheel fails loudly instead of
-# silently pulling a PyPI/CUDA build). torch pulls its matching triton
-# (triton==3.6.0+rocm7.13.0) from that same index.
-#
-# Then install gslab's real deps from PyPI and the wheel itself with --no-deps:
-# gslab's metadata declares a "triton-rocm" requirement that only exists on the
-# rocm7.2 pytorch index (wrong ROCm for this host and unavailable on PyPI). The
-# `triton` module it actually needs is already satisfied by torch's triton above,
-# so we install gslab's genuine deps explicitly and skip its phantom triton-rocm
-# pin. Delete the 20 MB wheel in the SAME layer so it is not stranded.
-RUN /usr/bin/python3 -m venv ${GSLAB_VENV} \
-    && ${GSLAB_VENV}/bin/pip install --no-cache-dir --upgrade pip \
-    && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
+# Build the workshop venv per INSTALL.md: torch FIRST from the host-matched ROCm
+# index (a pinned --index-url so a missing +rocm7.13.0 wheel fails loudly instead
+# of silently pulling a PyPI/CUDA build; it also pulls the pip rocm_sdk packages),
+# then gslab from the bundled wheel plus jupyter, resolving gslab's deps across
+# PyPI and the AMD index (unsafe-best-match). Delete the 20 MB wheel in the SAME
+# layer so it is not stranded.
+RUN uv venv --python 3.13 ${GSLAB_VENV} \
+    && VIRTUAL_ENV=${GSLAB_VENV} uv pip install --no-cache \
          --index-url https://repo.amd.com/rocm/whl/gfx1151/ \
          "torch==2.11.0+rocm7.13.0" \
     && ${GSLAB_VENV}/bin/python -c "import torch; assert torch.version.hip, \
          'gslab venv torch is not a ROCm/HIP build'; \
          print('gslab torch', torch.__version__, 'hip', torch.version.hip)" \
-    && ${GSLAB_VENV}/bin/pip install --no-cache-dir \
-         "genesis-world==1.4.0" "rsl-rl-lib>=5.4.0" "tyro>=1.0.13" "wandb>=0.27.2" \
-         jupyterlab ipykernel ipywidgets \
-    && ${GSLAB_VENV}/bin/pip install --no-cache-dir --no-deps \
-         /ryzers/notebooks/wheels/gslab-0.1.0-py3-none-any.whl \
-    && rm -f /ryzers/notebooks/wheels/gslab-0.1.0-py3-none-any.whl
+    && VIRTUAL_ENV=${GSLAB_VENV} uv pip install --no-cache \
+         --index-url https://pypi.org/simple \
+         --extra-index-url https://repo.amd.com/rocm/whl/gfx1151/ \
+         --index-strategy unsafe-best-match \
+         "gslab @ file:///ryzers/notebooks/wheels/gslab-0.1.2-py3-none-any.whl" \
+         jupyterlab ipykernel ipywidgets plotly tqdm \
+    && rm -f /ryzers/notebooks/wheels/gslab-0.1.2-py3-none-any.whl
+
+# Assemble the <venv>/rocm tree Genesis' quadrants compiler needs (unversioned
+# .so aliases + an ld.lld of LLVM >=19). The script self-verifies that ld.lld
+# runs and libamdhip64.so loads by bare name, so this layer fails loudly if the
+# base image lacks a new-enough linker.
+RUN VENV=${GSLAB_VENV} bash /ryzers/notebooks/link_rocm_tree.sh
 
 # Genesis pulls in system OpenGL at import time: pygel3d dlopens libGL.so.1, and
 # pyglet's default backend dlopens the X11/libXrender stack. This is a headless
@@ -94,20 +97,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # to set globally: nothing in the base image uses pyglet.
 ENV PYGLET_HEADLESS=1
 
-# Register the gslab-roscon kernelspec. The venv torch is rocm7.13, matching the
-# host's /opt/rocm/lib (same as auplc-base), so the kernel inherits the container
-# LD_LIBRARY_PATH rather than scrubbing it. Then a build-time smoke test (import +
-# HIP-build only, so it passes on a GPU-less builder; the notebook env-check is
-# the real runtime GPU gate).
+# Register the gslab-roscon kernelspec. quadrants (Genesis' compiler) runs
+# ${ROCM_PATH}/llvm/bin/ld.lld and dlopens libamdhip64.so by bare name, so the
+# kernel bakes in ROCM_PATH + LD_LIBRARY_PATH pointing at the <venv>/rocm tree
+# built above (the two venv-rocm dirs only, per INSTALL.md — torch finds HIP via
+# the rocm_sdk package, not this path). QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES raises
+# the compiled-kernel cache limit so kernels persist between runs. Then a
+# build-time smoke test (import + HIP-build only, so it passes on a GPU-less
+# builder; the notebook env-check is the real runtime GPU gate).
 RUN mkdir -p /usr/local/share/jupyter/kernels/gslab-roscon \
     && printf '%s\n' \
       '{' \
       '  "argv": ["/opt/gslab-venv/bin/python", "-m", "ipykernel_launcher", "-f", "{connection_file}"],' \
       '  "display_name": "gslab ROSCon (ROCm 7.13)",' \
-      '  "language": "python"' \
+      '  "language": "python",' \
+      '  "env": {' \
+      '    "ROCM_PATH": "/opt/gslab-venv/rocm",' \
+      '    "LD_LIBRARY_PATH": "/opt/gslab-venv/rocm/lib:/opt/gslab-venv/rocm/lib-gfx1151",' \
+      '    "QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES": "2147483647",' \
+      '    "PYTHONDONTWRITEBYTECODE": "1"' \
+      '  }' \
       '}' \
       > /usr/local/share/jupyter/kernels/gslab-roscon/kernel.json \
-    && ${GSLAB_VENV}/bin/python -c \
+    && ROCM_PATH=${GSLAB_VENV}/rocm \
+       LD_LIBRARY_PATH=${GSLAB_VENV}/rocm/lib:${GSLAB_VENV}/rocm/lib-gfx1151 \
+       ${GSLAB_VENV}/bin/python -c \
       "import torch, gslab, genesis; assert torch.version.hip; \
 print('gslab workshop env OK:', torch.__version__, '| genesis', genesis.__version__)"
 

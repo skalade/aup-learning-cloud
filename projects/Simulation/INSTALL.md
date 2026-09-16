@@ -1,80 +1,69 @@
-# Infrastructure installation guide
-
-This handoff is intended for the infrastructure owner preparing the Jupyter environment for the
-AMD and Robotec.ai ROSCon workshop.
+# Installation Guide
 
 ## Required platform
 
 | Component | Requirement |
 |---|---|
-| Host | Ubuntu 24.04 |
-| Hardware | AMD Strix Halo mini-PC|
-| ROCm | **ROCm 7.2** |
-| Python | 3.13 recommended; the wheel supports Python 3.12 and 3.13 |
-| PyTorch | `2.12.0+rocm7.2` |
-| Triton | `triton-rocm==3.7.0`  |
-| Genesis | `genesis-world==1.4.0` (installed through the gslab wheel) |
-| gslab | Bundled `wheels/gslab-0.1.0-py3-none-any.whl` |
+| Host | Ubuntu 24.04 with **ROCm 7.13** installed from AMD's apt packages (`amdrocm-*7.13`) |
+| Hardware | AMD Strix Halo mini-PC (Ryzen AI MAX+ 395, GPU target `gfx1151`) |
+| Python | 3.13 in a virtualenv created by `uv` (the wheel supports 3.12 and 3.13) |
+| PyTorch | `2.11.0+rocm7.13.0` from `https://repo.amd.com/rocm/whl/gfx1151/` |
+| Genesis | `genesis-world==1.4.0` with its compiler `quadrants==1.3.0` (installed through the gslab wheel) |
+| gslab | Bundled `wheels/gslab-0.1.2-py3-none-any.whl`, installed as `gslab[rocm]` |
 
 
-## 1. Prepare GPU access
-
-Install ROCm 7.2 according to AMD's host installation guide. 
-
-## 2. Create the Python environment
-
-Run these commands from the course root directory (the folder containing `INSTALL.md`,
-`checkpoints/`, and `notebooks/`). They intentionally install the ROCm build of PyTorch first,
-before resolving the gslab wheel dependencies.
+## 1. Create the Python environment
 
 ```bash
+/opt/rocm/llvm/bin/ld.lld --version     # must report LLD 19 or newer
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.13 .venv
 source .venv/bin/activate
 
-uv pip install \
-  --index https://download.pytorch.org/whl/rocm7.2 \
-  "torch==2.12.0+rocm7.2" "triton-rocm==3.7.0"
+uv pip install --index-url https://repo.amd.com/rocm/whl/gfx1151/ \
+    "torch==2.11.0+rocm7.13.0"
 
 uv pip install \
-  wheels/gslab-0.1.0-py3-none-any.whl \
-  jupyterlab ipykernel ipywidgets
+    --index-url https://pypi.org/simple \
+    --extra-index-url https://repo.amd.com/rocm/whl/gfx1151/ \
+    --index-strategy unsafe-best-match \
+    "gslab @ file://$PWD/wheels/gslab-0.1.2-py3-none-any.whl" \
+    jupyterlab ipykernel ipywidgets plotly tqdm
+
+./link_rocm_tree.sh # link the ROCm tree for Genesis
 ```
 
-The wheel includes the full `gslab` Python package, Unitree G1 MJCF, and robot meshes. No editable
-source checkout is needed.
+The `link_rocm_tree.sh` script: 
 
-## 3. Register the workshop kernel
+1. finds the pip ROCm SDK inside `.venv` (`_rocm_sdk_core`, `_rocm_sdk_libraries_gfx1151`);
+2. adds the unversioned `.so` aliases (`libamdhip64.so` next to `libamdhip64.so.7`, and so on);
+3. creates `.venv/rocm` with `lib/`, `lib-gfx1151/`, `bin/` and `share/` linked to the pip SDK;
+4. looks for an `ld.lld` of LLVM 19 or newer, preferring `/opt/rocm/llvm/bin/ld.lld`, then
+   `lld-20`/`lld-19` from apt.llvm.org, and links it as `.venv/rocm/llvm/bin/ld.lld`.
+   Set `LLD=/path/to/ld.lld` to choose one explicitly;
+5. writes `.venv/rocm/env.sh`, which exports the variables below;
+6. verifies that the linker runs and that `libamdhip64.so` loads by bare name.
+
+
+## 2. Register the jupyter kernel
 
 ```bash
+source .venv/bin/activate && source .venv/rocm/env.sh
 python -m ipykernel install --user \
-  --name gslab-roscon \
-  --display-name "gslab ROSCon (ROCm 7.2)"
+    --name gslab-roscon \
+    --display-name "gslab ROSCon (ROCm 7.13)" \
+    --env ROCM_PATH "$PWD/.venv/rocm" \
+    --env LD_LIBRARY_PATH "$PWD/.venv/rocm/lib:$PWD/.venv/rocm/lib-gfx1151" \
+    --env QD_OFFLINE_CACHE_MAX_SIZE_OF_FILES 2147483647 \
+    --env PYTHONDONTWRITEBYTECODE 1
 ```
 
-All packaged notebooks request the kernel named `gslab-roscon`.
+`env.sh` also raises the quadrants on-disk kernel-cache limit above its default so compiled
+kernels persist between runs.
 
-## 4. Launch JupyterLab
-
-Launch Jupyter from the course root directory so the notebooks can discover the bundled
-checkpoints and fixed log directory:
+## 3. Launch JupyterLab
 
 ```bash
+source .venv/bin/activate && source .venv/rocm/env.sh
 jupyter lab --notebook-dir .
 ```
-
-For a remote service, add the site's usual bind address, authentication, TLS, and proxy options.
-Do not expose an unauthenticated Jupyter server.
-
-## 5. Acceptance test
-
-Open `00_workshop_intro.ipynb` with the **gslab ROSCon (ROCm 7.2)** kernel and run
-its final environment-check cell. The final line should be:
-
-```text
-PASS: PyTorch sees the GPU and Genesis completed a step on gs.amdgpu.
-```
-
-A CPU fallback is treated as a failure. Do not continue to the training scene until this cell
-passes.
-
