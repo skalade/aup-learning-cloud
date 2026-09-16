@@ -47,6 +47,7 @@ RUN pip3 install --no-cache-dir \
       "absl-py" \
       "lxml" \
       "tqdm" \
+	  "warp-lang"\
     && pip3 install --no-cache-dir --no-deps \
       "git+https://github.com/google-deepmind/mujoco_playground.git@${PLAYGROUND_COMMIT}"
 

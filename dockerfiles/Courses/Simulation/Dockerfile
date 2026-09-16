@@ -75,6 +75,14 @@ RUN uv venv --python 3.13 ${GSLAB_VENV} \
          jupyterlab ipykernel ipywidgets plotly tqdm \
     && rm -f /ryzers/notebooks/wheels/gslab-0.1.2-py3-none-any.whl
 
+# uv places the managed CPython 3.13 under /root/.local/share/uv/python and points
+# ${GSLAB_VENV}/bin/python at it by symlink. /root is mode 700, so non-root jovyan
+# cannot traverse it to exec the interpreter and the gslab-roscon kernel dies with
+# "[Errno 13] Permission denied: '/opt/gslab-venv/bin/python'". Grant traversal-only
+# (o+x, not o+r) on /root so jovyan can reach the known interpreter path without being
+# able to list /root's contents. Everything below /root is already 0755.
+RUN chmod o+x /root
+
 # Assemble the <venv>/rocm tree Genesis' quadrants compiler needs (unversioned
 # .so aliases + an ld.lld of LLVM >=19). The script self-verifies that ld.lld
 # runs and libamdhip64.so loads by bare name, so this layer fails loudly if the
