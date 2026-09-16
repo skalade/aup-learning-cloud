@@ -75,6 +75,15 @@ RUN uv venv --python 3.13 ${GSLAB_VENV} \
          jupyterlab ipykernel ipywidgets plotly tqdm \
     && rm -f /ryzers/notebooks/wheels/gslab-0.1.2-py3-none-any.whl
 
+# plotly 5's labextension targets JupyterLab 3 and the 4.x server rejects it, so
+# FigureWidget never renders. plotly 6+ uses anywidget instead, and anywidget's
+# frontend has to be visible to the system JupyterLab, not just the kernel venv.
+# --no-deps bypasses PyGEL3D's plotly<6 pin; PyGEL3D only imports plotly in
+# pygel3d/jupyter_display.py, which neither Genesis nor gslab references.
+RUN VIRTUAL_ENV=${GSLAB_VENV} uv pip install --no-cache anywidget narwhals \
+    && VIRTUAL_ENV=${GSLAB_VENV} uv pip install --no-cache --no-deps --upgrade "plotly==7.1.0" \
+    && /usr/bin/python3 -m pip install --break-system-packages anywidget
+
 # uv places the managed CPython 3.13 under /root/.local/share/uv/python and points
 # ${GSLAB_VENV}/bin/python at it by symlink. /root is mode 700, so non-root jovyan
 # cannot traverse it to exec the interpreter and the gslab-roscon kernel dies with
