@@ -57,7 +57,7 @@ docker run --rm --network=host --ipc=host --shm-size 16G \
     /opt/train-venv/bin/python -m ipykernel install --user --name tv >/dev/null 2>&1
     jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=tv \
       --ExecutePreprocessor.timeout=-1 --output /home/jovyan/outputs/nb1.ipynb \
-      finetune_molmoact2_libero.ipynb'
+      1_finetune_molmoact2_libero.ipynb'
 ```
 
 A healthy run shows the closed-loop LIBERO evaluation reporting success.
