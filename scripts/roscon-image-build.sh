@@ -15,8 +15,8 @@ set -euo pipefail
 # Extra arguments are forwarded to auplc-installer, e.g.:
 #   scripts/roscon-image-build.sh --gpu=strix-halo
 #
-# Finetuning bakes in projects/Finetuning/mm2_workshop_assets.zip when present,
-# otherwise builds a code-only image.
+# Finetuning builds the reproducible online image; its notebooks download pinned public
+# checkpoints/datasets into persistent user storage on first use.
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 INSTALLER="$REPO_ROOT/auplc-installer"

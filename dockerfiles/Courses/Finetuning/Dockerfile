@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 
 ARG BASE_IMAGE=ghcr.io/amdresearch/auplc-base:latest
-# Selects the final stage: "without-assets" (default, code-only image for CI/registry) or
-# "with-assets" (workshop image with the dataset/model baked in). build.sh sets this to
-# with-assets and overrides the "assets" context below when ASSETS_SRC is provided.
+# Selects the final stage. The default code-only image downloads every model/dataset from its
+# public upstream on first use and is the normal reproducible build. "with-assets" remains as an
+# optional offline-event variant for organizers with the legacy bundle.
 ARG FINAL=without-assets
 
 # Optional pre-staged assets context. Empty by default; overridden at build time with
@@ -92,9 +92,9 @@ RUN mkdir -p /opt/libero-config \
 # disturbed. The FastWAM LIBERO path reuses the upstream `sim_libero` harness (vendored from
 # ClockWorkKid/Ryzers@benchmark), which needs the numpy-1.26.4 LIBERO sim stack -- deliberately
 # separate from the train-venv's numpy 2.x. FastWAM itself is cloned from its open-source upstream
-# at build; only the CUDA torch pins are stripped so it runs on auplc-base's ROCm torch. Weights
-# are NOT fetched here (baked from the local asset store in the with-assets stage / mounted at
-# runtime). Placed before the notebook COPY so this heavy layer stays cached across notebook edits.
+# at build; only the CUDA torch pins are stripped so it runs on auplc-base's ROCm torch. Public
+# weights are fetched into the user's persistent cache by notebook 3 on first use. Placed before
+# the notebook COPY so this heavy layer stays cached across notebook edits.
 # The fastwam venv is created from the BASE interpreter (/usr/bin/python3, the auplc-base ROCm
 # torch), NOT from train-venv, to keep a single, clean site-packages chain.
 # ============================================================================================
@@ -116,8 +116,10 @@ COPY fastwam/ /opt/fastwam-src/
 # Exact planning-path caches (bit-identical output, ~1.45x faster on gfx1151): memoize the
 # UMT5-XXL text encode across a replan episode and cache the action cross-attention K/V. Shipped
 # as a reviewable diff vs the pinned upstream; default-on at runtime (FASTWAM_TEXT_KV_CACHE=0
-# restores upstream behavior for parity checks).
-RUN git -C /repos/fastwam apply --verbose /opt/fastwam-src/patches/fastwam_kv_cache.patch
+# restores upstream behavior for parity checks). The second patch selects the original public Wan
+# T5/VAE files on Hugging Face instead of the converted ModelScope-only redirect.
+RUN git -C /repos/fastwam apply --verbose /opt/fastwam-src/patches/fastwam_kv_cache.patch \
+    && git -C /repos/fastwam apply --verbose /opt/fastwam-src/patches/fastwam_public_wan_assets.patch
 
 # Isolated venv: reuse auplc-base's ROCm torch (constraint-pinned so it is never replaced) while
 # installing the LIBERO sim stack (numpy 1.26.4) + FastWAM. Mirrors the simulation/libero +
@@ -159,8 +161,15 @@ RUN mkdir -p /opt/libero-config-fastwam \
        "import torch; assert torch.version.hip, 'torch is not a ROCm build: '+torch.__version__; import fastwam; from fastwam.runtime import create_fastwam; print('FastWAM import OK on torch', torch.__version__, 'hip', torch.version.hip)" \
     && rm -f /tmp/robosuite.log
 
+# Let notebooks pass the local snapshot returned by a revision-pinned Hub download into the
+# upstream DROID policy loader. Loading by repo id remains supported for existing callers.
+COPY molmoact2/ /opt/molmoact2-src/
+RUN git -C /opt/molmoact2 apply --verbose \
+      /opt/molmoact2-src/patches/molmoact2_local_checkpoint.patch
+
 RUN mkdir -p \
       /home/jovyan/.cache/huggingface \
+      /home/jovyan/.cache/fastwam \
       /home/jovyan/checkpoints \
       /home/jovyan/outputs \
       /ryzers/notebooks
@@ -169,7 +178,11 @@ RUN mkdir -p \
 # LocalInference course uses for its Streamlit UI). Installed into the system python that
 # runs the single-user Jupyter server.
 RUN /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages \
-      jupyter-server-proxy
+      jupyter-server-proxy \
+    && /opt/train-venv/bin/python -m ipykernel install \
+      --prefix=/usr/local \
+      --name=python3 \
+      --display-name="Python 3 (MolmoAct2)"
 
 COPY ./course_data /ryzers/notebooks
 # Make the shipped shell scripts executable and expose the env-check scripts at the
@@ -197,9 +210,9 @@ RUN getent group "${HOST_RENDER_GID}" >/dev/null \
 ENV HOME=/home/jovyan \
     PATH="/opt/train-venv/bin:${PATH}" \
     HF_HOME=/home/jovyan/.cache/huggingface \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1 \
-    HF_DATASETS_OFFLINE=1 \
+    HF_HUB_OFFLINE=0 \
+    TRANSFORMERS_OFFLINE=0 \
+    HF_DATASETS_OFFLINE=0 \
     LIBERO_CONFIG_PATH=/opt/libero-config \
     DROID_SERVER_DIR=/opt/molmoact2/examples/droid \
     OUT_DIR=/home/jovyan/outputs \
@@ -208,30 +221,29 @@ ENV HOME=/home/jovyan \
     MUJOCO_GL=egl \
     PYOPENGL_PLATFORM=egl
 
-# FastWAM (notebook 3) runtime knobs. The weight/data paths resolve to the baked assets in the
-# with-assets image; in a code-only image they can be overridden or mounted at runtime. The fastwam
-# venv uses its OWN LIBERO config path (never the train-venv's), and the exact planning-path caches
-# are on by default. DIFFSYNTH_MODEL_BASE_PATH is where the upstream loader looks for the Wan2.2
-# base (T5 + VAE + tokenizer) instead of downloading it.
+# FastWAM (notebook 3) runtime knobs. Public weights/data download once into persistent HOME.
+# The fastwam venv uses its OWN LIBERO config path (never the train-venv's), and the exact
+# planning-path caches are on by default. DIFFSYNTH_DOWNLOAD_SOURCE selects Hugging Face instead
+# of upstream's ModelScope default (the public files are available from both).
 ENV FASTWAM_REPO=/repos/fastwam \
     FASTWAM_VENV=/opt/fastwam-venv \
     LIBERO_CONFIG_PATH_FASTWAM=/opt/libero-config-fastwam \
-    DIFFSYNTH_MODEL_BASE_PATH=/opt/fastwam-assets/diffsynth \
-    FASTWAM_RELEASE_DIR=/opt/fastwam-assets/fastwam_release \
-    FASTWAM_DATA_DIR=/opt/fastwam-assets/data \
+    DIFFSYNTH_MODEL_BASE_PATH=/home/jovyan/.cache/fastwam/diffsynth \
+    DIFFSYNTH_DOWNLOAD_SOURCE=huggingface \
+    FASTWAM_REDIRECT_COMMON_FILES=false \
+    FASTWAM_RELEASE_DIR=/home/jovyan/.cache/fastwam/fastwam_release \
+    FASTWAM_DATA_DIR=/home/jovyan/.cache/fastwam/data \
     FASTWAM_TEXT_KV_CACHE=1
 
 USER jovyan
 WORKDIR /ryzers/notebooks
 
 # ---------------------------------------------------------------------------------------------
-# Distribution variants. The default final stage is the code-only image (no assets), which keeps
-# CI/registry builds and non-workshop use working unchanged. When build.sh passes
-# `--build-arg FINAL=with-assets` together with `--build-context assets=<RAW workshop bundle>`,
-# the build is FULLY SELF-CONTAINED: a staging stage unpacks the bundle and reconstructs the
-# fine-tuned checkpoint in-build, and the final stage bakes the result in with the HF cache
-# pointed at it (no host pre-stage, no shared mount). The cache lives under /opt (NOT /home/jovyan)
-# because a persistent volume mounts over /home/jovyan at runtime and would hide anything under HOME.
+# Distribution variants. The default final stage downloads pinned public inputs at notebook
+# runtime. When build.sh is explicitly given ASSETS_ZIP, it passes `FINAL=with-assets` plus a
+# BuildKit asset context. That optional offline-event stage unpacks the legacy bundle, reconstructs
+# its fine-tuned checkpoint, and stores everything under /opt so a runtime HOME volume cannot hide
+# it.
 # ---------------------------------------------------------------------------------------------
 FROM base AS without-assets
 
@@ -284,7 +296,11 @@ RUN chown -R jovyan:100 /opt/auplc-hf /opt/auplc-ref
 COPY --from=fastwam-staging /opt/fastwam-assets /opt/fastwam-assets
 ENV HF_HOME=/opt/auplc-hf \
     HF_LEROBOT_HOME=/opt/auplc-hf/lerobot \
-    REFERENCE_POLICY=/opt/auplc-ref/pretrained_model
+    REFERENCE_POLICY=/opt/auplc-ref/pretrained_model \
+    DIFFSYNTH_MODEL_BASE_PATH=/opt/fastwam-assets/diffsynth \
+    FASTWAM_REDIRECT_COMMON_FILES=true \
+    FASTWAM_RELEASE_DIR=/opt/fastwam-assets/fastwam_release \
+    FASTWAM_DATA_DIR=/opt/fastwam-assets/data
 USER jovyan
 WORKDIR /ryzers/notebooks
 

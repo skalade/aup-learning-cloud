@@ -6,58 +6,79 @@ Fine-tune a real-robot vision-language-action model (**MolmoAct2**) on a new ski
 simulator with a short **LoRA** run, then drive the fine-tuned policy live in the simulator. It runs
 in the browser on a single AMD **Strix Halo** machine as a JupyterHub course image.
 
----
+The course is reproducible from public sources. You do **not** need
+`mm2_workshop_assets.zip`: the notebooks download pinned Hugging Face revisions on first use and
+reuse the persistent cache afterwards.
 
-## Build the image
+## Requirements
 
-Two steps: **copy the assets, then run the build.**
+- A supported AMD ROCm GPU. The workshop target is Strix Halo (`gfx1151`).
+- Docker and enough space for the image, public inputs, and generated checkpoints. Budget at least
+  **150 GB free** to run all three notebooks.
+- A reliable internet connection for the first run. `HF_TOKEN` is optional but recommended to
+  avoid anonymous Hub rate limits.
+- Persistent storage for `/home/jovyan`; otherwise every fresh container downloads the inputs again.
 
-### 1. Copy the workshop assets zip into this folder
+## Build
 
-```bash
-cp /path/to/mm2_workshop_assets.zip  projects/Finetuning/
-```
-
-### 2. Run the build
-
-From the repo root:
+From the repository root:
 
 ```bash
 make -C dockerfiles finetuning GPU_TARGET=gfx1151
 ```
 
-The build unpacks the assets, rebuilds the fine-tuned checkpoint, and bakes everything — plus the two
-notebooks and helper scripts — into a self-contained image
-`ghcr.io/amdresearch/auplc-finetuning:latest` (also tagged `:latest-gfx1151`).
+This produces `ghcr.io/amdresearch/auplc-finetuning:latest` and
+`ghcr.io/amdresearch/auplc-finetuning:latest-gfx1151`. The image contains the pinned software
+stacks, notebooks, simulator, and helper scripts; large model and dataset files stay outside the
+image in the user's persistent cache.
 
----
+## Deploy
 
-## Deploy and hand out to attendees
-
-Deploy the JupyterHub server with the image you just built:
+Deploy JupyterHub with the image:
 
 ```bash
 sudo ./auplc-installer install --gpu=strix-halo
 ```
 
----
-
-## Developer check (optional): run a notebook headless against the built image
-
-Verify a build end-to-end with no network and no mounts, exactly what an attendee gets:
+Set a token before starting the notebooks if you have one:
 
 ```bash
-docker run --rm --network=host --ipc=host --shm-size 16G \
-  --device=/dev/kfd --device=/dev/dri --security-opt seccomp=unconfined \
-  --group-add video --group-add render \
-  --tmpfs /home/jovyan:mode=0777 \
-  -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-  --entrypoint bash ghcr.io/amdresearch/auplc-finetuning:latest-gfx1151 -lc '
-    mkdir -p /home/jovyan/outputs
-    /opt/train-venv/bin/python -m ipykernel install --user --name tv >/dev/null 2>&1
-    jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=tv \
-      --ExecutePreprocessor.timeout=-1 --output /home/jovyan/outputs/nb1.ipynb \
-      1_finetune_molmoact2_libero.ipynb'
+export HF_TOKEN=hf_...
 ```
 
-A healthy run shows the closed-loop LIBERO evaluation reporting success.
+Run the notebooks in order:
+
+1. `0_overview.ipynb`
+2. `1_finetune_molmoact2_libero.ipynb`
+3. `2_interactive_sim_molmoact2_libero.ipynb`
+4. `3_inference_fastwam_libero.ipynb`
+
+Notebook 1 downloads the public MolmoAct2 DROID base and full LIBERO training dataset, then
+evaluates the checkpoint it creates. Its DROID sanity check fetches only the selected episodes,
+not the entire DROID dataset. Notebook 2 uses the newest local training output by default; set
+`USE_PUBLIC_CHECKPOINT = True` in its setup cell to download AllenAI's fully trained public LIBERO
+checkpoint for comparison. Notebook 3 downloads the public FastWAM checkpoint,
+Wan T5/VAE/tokenizer components, and the LIBERO replay archive.
+
+All downloads are idempotent. The code pins immutable Hub commits, so a later change to a
+repository's `main` branch does not silently change the workshop.
+
+## Useful overrides
+
+- `STEPS=10000` — turn the short training smoke test into a longer run.
+- `N_DROID_EPISODES=1` — reduce the open-loop DROID download and runtime.
+- `USE_PUBLIC_CHECKPOINT = True` in notebook 2 — download the fully trained public comparison checkpoint.
+- `POLICY_PATH=/path/to/pretrained_model` — use a compatible local LeRobot checkpoint.
+- `FASTWAM_DOWNLOAD_DATASET=0` — skip FastWAM replay data when using only its interactive sim.
+- `HF_HOME`, `CHECKPOINTS_DIR`, `FASTWAM_CACHE` — relocate persistent large files.
+
+## Optional offline-event image
+
+The old private bundle path remains available only for organizers who already have it:
+
+```bash
+make -C dockerfiles finetuning GPU_TARGET=gfx1151 \
+  ASSETS_ZIP=/path/to/mm2_workshop_assets.zip
+```
+
+It is not required for home reproduction and is no longer selected automatically.

@@ -4,10 +4,11 @@
 
 set -euo pipefail
 
-# Hardcoded workshop asset bundle location: drop mm2_workshop_assets.zip into projects/Finetuning/
-# (next to the notebooks) and it gets baked into the image. Nothing to configure.
+# The normal reproducible build is code-only; notebooks fetch immutable public Hub revisions into
+# persistent user storage on first use. Organizers can still opt into the legacy offline image by
+# setting ASSETS_ZIP=/path/to/mm2_workshop_assets.zip.
 PROJECT_DIR="../../../projects/Finetuning"
-ASSETS_ZIP="${PROJECT_DIR}/mm2_workshop_assets.zip"
+ASSETS_ZIP="${ASSETS_ZIP:-}"
 
 WORK_ASSETS=""
 cleanup() {
@@ -24,10 +25,14 @@ mkdir -p course_data
 cp -r "$PROJECT_DIR"/. course_data/
 rm -rf course_data/mm2_workshop_assets course_data/mm2_workshop_assets.zip
 
-# Bake the workshop assets if the bundle is present; otherwise build a code-only image (CI/registry).
+# Bake the legacy workshop assets only when explicitly requested.
 BUILD_EXTRA=()
-if [ -f "${ASSETS_ZIP}" ]; then
-  echo "unpacking mm2_workshop_assets.zip (one-time; the bundle is large, this can take a while)..."
+if [ -n "${ASSETS_ZIP}" ]; then
+  [ -f "${ASSETS_ZIP}" ] || {
+    echo "ERROR: ASSETS_ZIP does not exist: ${ASSETS_ZIP}" >&2
+    exit 2
+  }
+  echo "unpacking optional offline asset bundle (one-time; this can take a while)..."
   # Unpack OUTSIDE the docker build context (extracting here would bloat the context sent to the
   # daemon). /var/tmp is disk-backed and typically large enough for the ~16 GB bundle.
   WORK_ASSETS="$(mktemp -d "${TMPDIR:-/var/tmp}/auplc-ft-assets.XXXXXX")"
@@ -35,7 +40,7 @@ if [ -f "${ASSETS_ZIP}" ]; then
   echo "baking workshop assets into the image from: ${WORK_ASSETS}/mm2_workshop_assets"
   BUILD_EXTRA+=(--build-context "assets=${WORK_ASSETS}/mm2_workshop_assets" --build-arg "FINAL=with-assets")
 else
-  echo "no mm2_workshop_assets.zip in projects/Finetuning/ -> building code-only image (assets NOT baked in)."
+  echo "building reproducible online image; notebooks download pinned public assets on first use."
 fi
 
 DOCKER_BUILDKIT=1 docker build ${BASE_IMAGE:+--build-arg BASE_IMAGE="$BASE_IMAGE"} \
