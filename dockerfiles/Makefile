@@ -27,14 +27,9 @@ ROCM_SDK_TARGET ?= $(GPU_TARGET)
 GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest
 CODE_GPU_BASE_IMAGE ?= ghcr.io/amdresearch/auplc-base:latest-$(GPU_TARGET)
 
-# Finetuning course assets. ASSETS_SRC points at the RAW split-tar workshop bundle (base/ libero/
-# tokenizer/ droid_dataset/ ft_checkpoint/). `make finetuning ASSETS_SRC=<bundle>` is FULLY
-# self-contained: the Docker build itself unpacks the bundle and reconstructs the reference
-# checkpoint (no host pre-stage), then bakes everything in so the image needs no shared mount.
-# Set ASSETS_SRC= (empty) to build a code-only image for CI/registry.
-ASSETS_ROOT      ?= /opt/auplc-assets
-ASSETS_BUNDLE    ?= $(ASSETS_ROOT)/mm2_workshop_assets
-ASSETS_SRC       ?= $(ASSETS_BUNDLE)
+# The normal finetuning image downloads pinned public assets on first notebook use. ASSETS_ZIP is
+# an optional legacy offline-event bundle; leave it empty for the reproducible home build.
+ASSETS_ZIP       ?=
 FINETUNING_IMAGE ?= ghcr.io/amdresearch/auplc-finetuning:latest
 
 # Build args for docker build (constructed from mirror settings)
@@ -177,22 +172,20 @@ simulation:
 
 finetuning:
 	@echo "-------------------------------------------"; \
-		echo "Building ROSCon Finetuning Course Image (self-contained)..."; \
-		echo "  pass the RAW workshop bundle via ASSETS_SRC, e.g.:"; \
-		echo "  make -C dockerfiles finetuning GPU_TARGET=$(GPU_TARGET) ASSETS_SRC=/path/to/mm2_workshop_assets"; \
-		echo "  (current ASSETS_SRC=$(ASSETS_SRC))"; \
+		echo "Building ROSCon Finetuning Course Image..."; \
+		echo "  default: pinned public assets download on first notebook use"; \
+		echo "  optional offline bundle: $(if $(ASSETS_ZIP),$(ASSETS_ZIP),<none>)"; \
 		echo "-------------------------------------------";
 
-	cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) ASSETS_SRC="$(ASSETS_SRC)" bash ./build.sh
+	cd Courses/Finetuning && BASE_IMAGE=$(GPU_BASE_IMAGE) ASSETS_ZIP="$(ASSETS_ZIP)" bash ./build.sh
 	docker tag ghcr.io/amdresearch/auplc-finetuning:latest ghcr.io/amdresearch/auplc-finetuning:latest-$(GPU_TARGET)
 	$(MAKE) save-image IMAGE=ghcr.io/amdresearch/auplc-finetuning:latest
 
-# Back-compat alias. Pre-staging now happens INSIDE the Docker build, so this is equivalent to
-# `make finetuning ASSETS_SRC=<bundle>`. Kept so existing docs / muscle-memory keep working.
+# Back-compat alias for organizers still using the optional offline zip.
 .PHONY: finetuning-baked
 finetuning-baked:
-	@echo ">> 'finetuning-baked' now just runs 'finetuning' (bundle is pre-staged inside the build)."
-	$(MAKE) finetuning ASSETS_SRC="$(ASSETS_SRC)"
+	@test -n "$(ASSETS_ZIP)" || { echo "ERROR: set ASSETS_ZIP=/path/to/mm2_workshop_assets.zip"; exit 2; }
+	$(MAKE) finetuning ASSETS_ZIP="$(ASSETS_ZIP)"
 
 local-inference:
 	@echo "-------------------------------------------"; \

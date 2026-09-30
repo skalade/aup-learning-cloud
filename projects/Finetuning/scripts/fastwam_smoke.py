@@ -56,7 +56,8 @@ def main() -> int:
         sys.path.insert(0, FASTWAM_REPO)
     if not os.path.exists(CKPT):
         print(f"FAIL: checkpoint not found: {CKPT}\n"
-              f"      bake the FastWAM assets (with-assets image) or mount them.", file=sys.stderr)
+              "      run notebook 3's setup cell to download the public FastWAM assets,\n"
+              "      or set FASTWAM_RELEASE_DIR to an existing cache.", file=sys.stderr)
         return 1
 
     from hydra.utils import instantiate

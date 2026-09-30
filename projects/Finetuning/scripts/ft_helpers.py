@@ -17,8 +17,11 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 
@@ -145,6 +148,25 @@ def _repo_dir(repo_id, repo_type):
     return os.path.join(_hub(), pfx + repo_id.replace("/", "--"))
 
 
+def _repair_dangling_hub_links():
+    """Remove top-level cache links left by an unavailable legacy asset mount.
+
+    Older workshop deployments linked whole Hub repositories in the persistent user home to
+    `/opt/auplc-assets`. After switching to the online image, those links can outlive their mount.
+    Hugging Face then cannot create the repository's `blobs/` or `trees/` directories because the
+    repository path is a dangling symlink. Only broken top-level links are removed; valid staged
+    repositories and Hugging Face's internal snapshot symlinks are untouched.
+    """
+    hub = _hub()
+    if not os.path.isdir(hub):
+        return
+    for entry in os.scandir(hub):
+        if entry.is_symlink() and not os.path.exists(entry.path):
+            target = os.readlink(entry.path)
+            os.unlink(entry.path)
+            print(f"    REPAIR  removed stale HF cache link: {entry.name} -> {target}")
+
+
 def _dir_gb(path):
     try:
         return int(subprocess.check_output(["du", "-sb", path], stderr=subprocess.DEVNULL).split()[0]) / 1e9
@@ -152,10 +174,49 @@ def _dir_gb(path):
         return 0.0
 
 
-def _fully_cached(repo_id, repo_type):
-    # True only if every file is already present (no network) -> instant, no re-download.
+def _fully_cached(repo_id, repo_type, revision=None):
+    # Hugging Face 1.x returns an existing snapshot directory in local-only mode even when it
+    # contains just one previously downloaded file. Prefer its cached tree manifest, which lists
+    # every file and expected size, so an interrupted/partial snapshot is never reported complete.
+    repo_dir = _repo_dir(repo_id, repo_type)
+    if revision:
+        manifest = os.path.join(repo_dir, "trees", f"{revision}.json")
+        if os.path.isfile(manifest):
+            try:
+                with open(manifest) as manifest_file:
+                    files = json.load(manifest_file).get("files", {})
+                snapshot = os.path.join(repo_dir, "snapshots", revision)
+                return bool(files) and all(
+                    os.path.isfile(os.path.join(snapshot, rel))
+                    and os.path.getsize(os.path.join(snapshot, rel)) == meta["size"]
+                    for rel, meta in files.items()
+                )
+            except (OSError, KeyError, TypeError, ValueError):
+                return False
+
+        # Legacy offline bundles predate the tree-manifest cache. They are complete by
+        # construction and live under /opt; retain their local-only compatibility.
+        if os.path.realpath(repo_dir).startswith("/opt/auplc-"):
+            try:
+                snapshot_download(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=revision,
+                    local_files_only=True,
+                )
+                return True
+            except Exception:
+                return False
+        return False
+
+    # Unpinned compatibility path: local-only is the best available check.
     try:
-        snapshot_download(repo_id=repo_id, repo_type=repo_type, local_files_only=True)
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            local_files_only=True,
+        )
         return True
     except Exception:
         return False
@@ -169,13 +230,20 @@ def _heartbeat(repo_id, repo_type, stop):
         last = cur
 
 
-def prefetch(repo_id, repo_type, tries=5):
+def prefetch(repo_id, repo_type, revision=None, tries=5):
     """Download `repo_id` into the HF cache (idempotent). Skips instantly if fully cached; shows a
-    plain GB heartbeat while pulling (VERBOSE_DOWNLOAD=1); retries through network hiccups."""
+    plain GB heartbeat while pulling (VERBOSE_DOWNLOAD=1); retries through network hiccups.
+    Returns the resolved snapshot directory."""
+    _repair_dangling_hub_links()
     verbose_dl = os.environ.get("VERBOSE_DOWNLOAD", "1") == "1"
-    if _fully_cached(repo_id, repo_type):
+    if _fully_cached(repo_id, repo_type, revision=revision):
         print(f"    CACHED  [{repo_type}] {repo_id}  ({_dir_gb(_repo_dir(repo_id, repo_type)):.2f} GB) - skipping")
-        return
+        return snapshot_download(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            local_files_only=True,
+        )
     print(f"    FETCH   [{repo_type}] {repo_id}  - downloading into HF cache", flush=True)
     for n in range(1, tries + 1):
         stop, th = threading.Event(), None
@@ -184,12 +252,16 @@ def prefetch(repo_id, repo_type, tries=5):
             th.start()
         try:
             t0 = time.time()
-            snapshot_download(repo_id=repo_id, repo_type=repo_type)
+            snapshot = snapshot_download(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+            )
             stop.set()
             if th:
                 th.join(timeout=1)
             print(f"    DONE    [{repo_type}] {repo_id}  ({_dir_gb(_repo_dir(repo_id, repo_type)):.2f} GB in {time.time() - t0:.0f}s)")
-            return
+            return snapshot
         except Exception as e:
             stop.set()
             if th:
@@ -198,6 +270,32 @@ def prefetch(repo_id, repo_type, tries=5):
             if n == tries:
                 raise
             time.sleep(5)
+
+
+def link_lerobot_dataset(repo_id, snapshot):
+    """Expose an HF-cached dataset where LeRobot looks for local datasets.
+
+    This prevents LeRobot from downloading a second copy after snapshot_download. It also keeps
+    the old workshop subset layout working: whichever snapshot was resolved is the one training
+    sees.
+    """
+    lr_home = os.environ.get(
+        "HF_LEROBOT_HOME",
+        os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "lerobot"),
+    )
+    dst = os.path.join(lr_home, *repo_id.split("/"))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.lexists(dst):
+        if os.path.islink(dst) and os.path.realpath(dst) == os.path.realpath(snapshot):
+            print(f"    LeRobot dataset already linked -> {dst}")
+            return dst
+        if os.path.islink(dst) or os.path.isfile(dst):
+            os.remove(dst)
+        else:
+            shutil.rmtree(dst)
+    os.symlink(os.path.realpath(snapshot), dst)
+    print(f"    LeRobot dataset link -> {dst}")
+    return dst
 
 
 def _stage_from_dir(assets_dir):
@@ -226,25 +324,29 @@ def _stage_from_dir(assets_dir):
 
 def stage_assets():
     """If ASSETS_DIR is set, stage the base checkpoint + dataset + fine-tuned checkpoint from local
-    storage into the HF cache (no Hub re-download). Otherwise the image-baked cache is used as-is."""
+    storage into the HF cache (no Hub re-download). Otherwise use the configured cache and let
+    prefetch() download any missing public files."""
     assets_dir = os.environ.get("ASSETS_DIR", "").strip()
     if assets_dir:
         print(f"== staging assets from ASSETS_DIR={assets_dir} (no Hub re-download) ==")
         _stage_from_dir(assets_dir)
         print("== asset staging done ==\n")
     else:
-        print(f"== assets read from the image-baked cache: HF_HOME={os.environ.get('HF_HOME', '')} (no staging needed) ==\n")
+        print(f"== using HF cache: HF_HOME={os.environ.get('HF_HOME', '')} (missing public files will download) ==\n")
 
 
-def preflight_inputs(base_ckpt, dataset_repo):
+def preflight_inputs(base_ckpt, dataset_repo, base_revision=None, dataset_revision=None):
     """Confirm every input (base checkpoint, dataset, optional policy) is found BEFORE the long
     model load / training, so a missing asset fails fast with a clear message."""
     print("== preflight: inputs the notebook needs ==")
-    _needed = [(base_ckpt, "model"), (dataset_repo, "dataset")]
+    _needed = [
+        (base_ckpt, "model", base_revision),
+        (dataset_repo, "dataset", dataset_revision),
+    ]
     _pol = os.environ.get("POLICY_PATH") or os.environ.get("REFERENCE_POLICY", "")
-    for _rid, _rt in _needed:
+    for _rid, _rt, _rev in _needed:
         _d = _repo_dir(_rid, _rt)
-        if _fully_cached(_rid, _rt):
+        if _fully_cached(_rid, _rt, revision=_rev):
             print(f"  [ok]      {_rt:7s} {_rid}  CACHED ({_dir_gb(_d):.2f} GB)")
         else:
             print(f"  [missing] {_rt:7s} {_rid}  will download")
@@ -254,7 +356,7 @@ def preflight_inputs(base_ckpt, dataset_repo):
     print("== end preflight ==\n")
 
 
-def fetch_full_libero(dataset_repo):
+def fetch_full_libero(dataset_repo, revision=None):
     """EXTENDED ROUTE (USE_FULL_LIBERO=1): pull the COMPLETE LIBERO dataset from the Hub (needs
     internet; ~33 GB) and repoint the LeRobot dataset home at it, replacing the staged subset.
     Because the subset reuses each file's real content hash, only missing files download."""
@@ -266,24 +368,156 @@ def fetch_full_libero(dataset_repo):
     _hc.HF_HUB_OFFLINE = False  # this flag is captured at import time; flip it to actually reach the Hub
     os.environ["HF_HUB_OFFLINE"] = "0"
     try:
-        _full = snapshot_download(repo_id=dataset_repo, repo_type="dataset", local_files_only=False)
+        _full = snapshot_download(
+            repo_id=dataset_repo,
+            repo_type="dataset",
+            revision=revision,
+            local_files_only=False,
+        )
     finally:
         _hc.HF_HUB_OFFLINE = _prev_off
         os.environ["HF_HUB_OFFLINE"] = "1" if _prev_off else "0"
     # Point the LeRobot dataset home at the full snapshot (replaces the staged-subset link) so Step 4
     # trains on the complete dataset.
-    _lr_home = os.environ.get(
-        "HF_LEROBOT_HOME",
-        os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "lerobot"),
-    )
-    _lr = os.path.join(_lr_home, *dataset_repo.split("/"))
-    os.makedirs(os.path.dirname(_lr), exist_ok=True)
-    if os.path.islink(_lr) or os.path.isfile(_lr):
-        os.remove(_lr)
-    elif os.path.isdir(_lr):
-        shutil.rmtree(_lr)
-    os.symlink(_full, _lr)
+    _lr = link_lerobot_dataset(dataset_repo, _full)
     print(f"    full LIBERO dataset ready ({_dir_gb(_full):.1f} GB) -> {_lr}")
+    return _full
+
+
+def _safe_extract_tar(archive, destination):
+    """Extract a public dataset archive without allowing links or paths outside destination."""
+    root = os.path.realpath(destination)
+    with tarfile.open(archive, "r:*") as tf:
+        members = tf.getmembers()
+        for member in members:
+            resolved = os.path.realpath(os.path.join(root, member.name))
+            if os.path.commonpath((root, resolved)) != root:
+                raise RuntimeError(f"unsafe path in {archive}: {member.name}")
+            if member.issym() or member.islnk() or member.isdev():
+                raise RuntimeError(f"unsupported link/device in {archive}: {member.name}")
+        tf.extractall(root, members=members)
+
+
+def prepare_fastwam_assets(release_dir, diffsynth_dir, data_dir, include_dataset=True):
+    """Download FastWAM's released public inputs from Hugging Face.
+
+    Files are placed in the exact directory layout expected by the pinned FastWAM loader. Existing
+    files are reused, so this is safe to run whenever notebook 3 starts.
+    """
+    release_dir = os.path.abspath(os.path.expanduser(release_dir))
+    diffsynth_dir = os.path.abspath(os.path.expanduser(diffsynth_dir))
+    data_dir = os.path.abspath(os.path.expanduser(data_dir))
+    os.makedirs(release_dir, exist_ok=True)
+    os.makedirs(diffsynth_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
+
+    release_files = [
+        "libero_uncond_2cam224.pt",
+        "libero_uncond_2cam224_dataset_stats.json",
+    ]
+    if not all(os.path.isfile(os.path.join(release_dir, name)) for name in release_files):
+        print("== downloading public FastWAM checkpoint (~12 GB) ==")
+        snapshot_download(
+            repo_id="yuanty/fastwam",
+            revision="8eaceeb24c3cc92ff2a9c9a9d266a4941b836705",
+            allow_patterns=release_files,
+            local_dir=release_dir,
+        )
+    else:
+        print("== public FastWAM checkpoint already cached ==")
+
+    redirect = os.environ.get("FASTWAM_REDIRECT_COMMON_FILES", "false").lower() == "true"
+    if redirect:
+        # Legacy offline-event bundles contain FastWAM's converted ModelScope files. They are not
+        # fetched by the public path, but accepting them keeps those explicitly requested images
+        # functional.
+        converted = os.path.join(
+            diffsynth_dir,
+            "DiffSynth-Studio",
+            "Wan-Series-Converted-Safetensors",
+        )
+        converted_files = [
+            os.path.join(converted, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+            os.path.join(converted, "Wan2.2_VAE.safetensors"),
+            os.path.join(
+                diffsynth_dir,
+                "Wan-AI",
+                "Wan2.1-T2V-1.3B",
+                "google",
+                "umt5-xxl",
+                "tokenizer.json",
+            ),
+        ]
+        missing = [path for path in converted_files if not os.path.isfile(path)]
+        if missing:
+            raise FileNotFoundError(
+                "legacy FastWAM asset bundle is incomplete:\n  " + "\n  ".join(missing)
+            )
+        print("== legacy converted FastWAM components already cached ==")
+    else:
+        # The normal home path selects Wan's original public T5/VAE files. Match ModelConfig's
+        # <base>/<repo_id>/<pattern> lookup exactly.
+        component_specs = [
+            (
+                "Wan-AI/Wan2.2-TI2V-5B",
+                "921dbaf3f1674a56f47e83fb80a34bac8a8f203e",
+                ["models_t5_umt5-xxl-enc-bf16.pth", "Wan2.2_VAE.pth"],
+            ),
+            (
+                "Wan-AI/Wan2.1-T2V-1.3B",
+                "37ec512624d61f7aa208f7ea8140a131f93afc9a",
+                ["google/umt5-xxl/**"],
+            ),
+        ]
+        for repo_id, revision, patterns in component_specs:
+            local_dir = os.path.join(diffsynth_dir, *repo_id.split("/"))
+            if repo_id.endswith("Wan2.2-TI2V-5B"):
+                ready = all(os.path.isfile(os.path.join(local_dir, name)) for name in patterns)
+            else:
+                ready = os.path.isfile(
+                    os.path.join(local_dir, "google", "umt5-xxl", "tokenizer.json")
+                )
+            if ready:
+                print(f"== FastWAM component already cached: {repo_id} ==")
+                continue
+            print(f"== downloading public FastWAM component: {repo_id} ==")
+            snapshot_download(
+                repo_id=repo_id,
+                revision=revision,
+                allow_patterns=patterns,
+                local_dir=local_dir,
+            )
+
+    dataset_name = "libero_object_no_noops_lerobot"
+    dataset_dir = os.path.join(data_dir, dataset_name)
+    if include_dataset and not os.path.isfile(os.path.join(dataset_dir, "meta", "info.json")):
+        print("== downloading public FastWAM LIBERO-Object replay data (~1.4 GB) ==")
+        archive = snapshot_download(
+            repo_id="yuanty/LIBERO-fastwam",
+            repo_type="dataset",
+            revision="ee018b997c430bb12b5bf3c892d744798c5a2f91",
+            allow_patterns=[f"{dataset_name}.tar.gz"],
+        )
+        archive = os.path.join(archive, f"{dataset_name}.tar.gz")
+        work = tempfile.mkdtemp(prefix=".fastwam-extract-", dir=data_dir)
+        try:
+            _safe_extract_tar(archive, work)
+            extracted = os.path.join(work, dataset_name)
+            if not os.path.isfile(os.path.join(extracted, "meta", "info.json")):
+                raise RuntimeError(f"unexpected FastWAM dataset archive layout: {archive}")
+            if os.path.exists(dataset_dir):
+                shutil.rmtree(dataset_dir)
+            shutil.move(extracted, dataset_dir)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    elif include_dataset:
+        print("== public FastWAM replay data already cached ==")
+
+    return {
+        "checkpoint": os.path.join(release_dir, release_files[0]),
+        "dataset_stats": os.path.join(release_dir, release_files[1]),
+        "dataset": dataset_dir if include_dataset else None,
+    }
 
 
 # ---------------------------------------------------------------------------------------
@@ -349,7 +583,7 @@ def _decode_clip(path, start_idx, n_frames):
     return frames
 
 
-def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_dir):
+def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_dir, exclude=None):
     """Replay one random DROID episode open-loop (replan every STRIDE) and show GT-vs-pred."""
     import matplotlib.pyplot as plt  # inline backend -> plots render in the notebook, no Agg/subprocess
     import pyarrow.compute as pc
@@ -359,43 +593,81 @@ def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_d
     from PIL import Image
 
     eval_repo = os.environ.get("EVAL_REPO", "allenai/MolmoAct2-DROID-Dataset")
+    eval_revision = os.environ.get(
+        "EVAL_REVISION",
+        "e44d3138c64cfeb1c24fbbce087b475fb1233728",
+    )
     stride = int(os.environ.get("STRIDE", "15"))
     view_cam = "observation.images." + os.environ.get("CAM", "exterior_1_left")
     cams = ["observation.images.exterior_1_left", "observation.images.exterior_2_left", "observation.images.wrist_left"]
     dim_names = ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6", "gripper"]
 
-    info_path = hf_hub_download(eval_repo, "meta/info.json", repo_type="dataset")
+    info_path = hf_hub_download(
+        eval_repo,
+        "meta/info.json",
+        repo_type="dataset",
+        revision=eval_revision,
+    )
     info = json.load(open(info_path))
     fps, data_tmpl, video_tmpl = info["fps"], info["data_path"], info["video_path"]
     meta_ep = pq.read_table(
-        hf_hub_download(eval_repo, "meta/episodes/chunk-000/file-000.parquet", repo_type="dataset")
+        hf_hub_download(
+            eval_repo,
+            "meta/episodes/chunk-000/file-000.parquet",
+            repo_type="dataset",
+            revision=eval_revision,
+        )
     ).to_pydict()
     episodes = list(meta_ep["episode_index"])
-    # The workshop pre-stages only a subset of the DROID dataset (kept offline, zero-copy), so
-    # restrict the random pick to episodes whose data parquet AND all camera videos are present
-    # in the local cache. This avoids reaching for a file that was not bundled.
+    # Prefer already-cached episodes (including the old workshop subset). On a clean home setup,
+    # download just one randomly selected episode's parquet + three camera files instead of the
+    # complete DROID dataset.
     snap_root = os.path.dirname(os.path.dirname(info_path))
     _present = lambda rel: os.path.exists(os.path.join(snap_root, rel))
+
+    def _episode_files(row):
+        return [
+            data_tmpl.format(
+                chunk_index=meta_ep["data/chunk_index"][row],
+                file_index=meta_ep["data/file_index"][row],
+            ),
+            *[
+                video_tmpl.format(
+                    video_key=c,
+                    chunk_index=meta_ep[f"videos/{c}/chunk_index"][row],
+                    file_index=meta_ep[f"videos/{c}/file_index"][row],
+                )
+                for c in cams
+            ],
+        ]
+
+    exclude = set(exclude or ())
     available = [
         ep
         for r, ep in enumerate(episodes)
-        if _present(data_tmpl.format(chunk_index=meta_ep["data/chunk_index"][r], file_index=meta_ep["data/file_index"][r]))
-        and all(
-            _present(
-                video_tmpl.format(
-                    video_key=c,
-                    chunk_index=meta_ep[f"videos/{c}/chunk_index"][r],
-                    file_index=meta_ep[f"videos/{c}/file_index"][r],
-                )
-            )
-            for c in cams
-        )
+        if ep not in exclude and all(_present(rel) for rel in _episode_files(r))
     ]
-    if not available:
-        raise RuntimeError("No pre-staged DROID episodes found in the local cache; check the workshop assets.")
     ep_env = os.environ.get("EPISODE", "")
-    episode = int(ep_env) if ep_env else random.choice(available)
+    candidates = [ep for ep in episodes if ep not in exclude]
+    episode = int(ep_env) if ep_env else random.choice(available or candidates)
+    if episode not in episodes:
+        raise ValueError(f"EPISODE={episode} is not present in {eval_repo}")
     mr = episodes.index(episode)
+    if episode not in available:
+        print(f"episode {episode} is not cached; downloading its DROID parquet + 3 camera files ...")
+        try:
+            for rel in _episode_files(mr):
+                hf_hub_download(
+                    eval_repo,
+                    rel,
+                    repo_type="dataset",
+                    revision=eval_revision,
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not download DROID episode {episode} from {eval_repo}. "
+                "Check network access/HF_TOKEN or choose a cached EPISODE."
+            ) from exc
     d_chunk, d_file = meta_ep["data/chunk_index"][mr], meta_ep["data/file_index"][mr]
     length = meta_ep["length"][mr]
     task = meta_ep["tasks"][mr]
@@ -404,7 +676,12 @@ def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_d
 
     # dataset_from/to_index are GLOBAL rows; filter the per-file table by episode_index.
     dt = pq.read_table(
-        hf_hub_download(eval_repo, data_tmpl.format(chunk_index=d_chunk, file_index=d_file), repo_type="dataset")
+        hf_hub_download(
+            eval_repo,
+            data_tmpl.format(chunk_index=d_chunk, file_index=d_file),
+            repo_type="dataset",
+            revision=eval_revision,
+        )
     )
     ep_table = dt.filter(pc.equal(dt.column("episode_index"), episode))
     col = lambda name: ep_table.column(name).to_pylist()
@@ -428,6 +705,7 @@ def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_d
             eval_repo,
             video_tmpl.format(video_key=c, chunk_index=cm["chunk"], file_index=cm["file"]),
             repo_type="dataset",
+            revision=eval_revision,
         )
         idxs = [int(round((cm["from_ts"] + timestamps[t]) * fps)) for t in replan_pts]
         grabbed = _grab_frames(vp, idxs)
@@ -456,6 +734,7 @@ def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_d
         eval_repo,
         video_tmpl.format(video_key=view_cam, chunk_index=cm["chunk"], file_index=cm["file"]),
         repo_type="dataset",
+        revision=eval_revision,
     )
     frames = _decode_clip(vpath, int(round((cm["from_ts"] + timestamps[0]) * fps)), length)
     vid = os.path.join(out_dir, f"droid_ep{episode}.mp4")
@@ -484,6 +763,7 @@ def _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_d
     plt.show()
     if frames:
         display(Video(vid, embed=True, width=480))
+    return episode
 
 
 def run_openloop_episodes(base_policy, predict_chunk, norm_tag, num_steps, out_dir):
@@ -491,5 +771,15 @@ def run_openloop_episodes(base_policy, predict_chunk, norm_tag, num_steps, out_d
     (and the exterior-cam video) inline for each. `predict_chunk` is the notebook's flow-matching
     action-head call, passed in so the model-call semantics stay visible in the notebook."""
     n_droid = int(os.environ.get("N_DROID_EPISODES", "2"))
+    seen = set()
     for _ in range(n_droid):
-        _run_openloop_episode(base_policy, predict_chunk, norm_tag, num_steps, out_dir)
+        seen.add(
+            _run_openloop_episode(
+                base_policy,
+                predict_chunk,
+                norm_tag,
+                num_steps,
+                out_dir,
+                exclude=seen,
+            )
+        )
